@@ -1,0 +1,108 @@
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: fox
+      POSTGRES_PASSWORD: fox
+      POSTGRES_DB: foxengine
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    environment:
+      # Without this, the image locks `default` to localhost-only; other services get auth failures.
+      CLICKHOUSE_PASSWORD: fox
+    ports:
+      - "8123:8123"
+      - "9009:9000"
+    volumes:
+      - chdata:/var/lib/clickhouse
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+    command: ["/data"]
+    ports:
+      - "9000:9000"
+    volumes:
+      - rustfsdata:/data
+
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8080:8080"
+    volumes:
+      - llm_models:/models
+      - ./docker/llama-cpp/entrypoint.sh:/entrypoint.sh:ro
+    environment:
+      LLM_MODEL_URL: ${LLM_MODEL_URL:-https://huggingface.co/mradermacher/Qwen3-4B-GGUF/resolve/main/Qwen3-4B.Q4_K_M.gguf}
+      LLM_MODEL_FILE: ${LLM_MODEL_FILE:-Qwen3-4B.Q4_K_M.gguf}
+      LLM_N_GPU_LAYERS: ${LLM_N_GPU_LAYERS:-0}
+      LLM_MODEL_MIN_BYTES: ${LLM_MODEL_MIN_BYTES:-2000000000}
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 900s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      FOX_MASTER_KEY: ${FOX_MASTER_KEY:-61zn4lPUOxHKpCWWnqA0XCsQkOzNzM55WXU-qVj37EU=}
+      FOX_DATABASE_URL: postgresql+asyncpg://fox:fox@postgres:5432/foxengine
+      FOX_CLICKHOUSE_HOST: clickhouse
+      FOX_CLICKHOUSE_PORT: "8123"
+      FOX_CLICKHOUSE_DATABASE: foxengine
+      FOX_CLICKHOUSE_USER: default
+      FOX_CLICKHOUSE_PASSWORD: fox
+      FOX_S3_ENDPOINT_URL: http://rustfs:9000
+      FOX_S3_ACCESS_KEY_ID: rustfsadmin
+      FOX_S3_SECRET_ACCESS_KEY: rustfsadmin
+      FOX_LLM_BASE_URL: ${FOX_LLM_BASE_URL:-http://llama-cpp:8080}
+      FOX_LLM_MODEL: ${FOX_LLM_MODEL:-local}
+      FOX_LLM_ENABLED: ${FOX_LLM_ENABLED:-true}
+      FOX_LLM_API_KEY: ${FOX_LLM_API_KEY:-}
+      FOX_LLM_HEALTH_PATH: ${FOX_LLM_HEALTH_PATH:-health}
+    depends_on:
+      - postgres
+      - clickhouse
+      - rustfs
+      - llama-cpp
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/bin/sh", "-c", "cd /app && .venv/bin/python -c 'from foxengine.bootstrap import ensure_procrastinate_schema; ensure_procrastinate_schema()' && .venv/bin/foxengine-worker"]
+    environment:
+      FOX_MASTER_KEY: ${FOX_MASTER_KEY:-61zn4lPUOxHKpCWWnqA0XCsQkOzNzM55WXU-qVj37EU=}
+      FOX_DATABASE_URL: postgresql+asyncpg://fox:fox@postgres:5432/foxengine
+      FOX_CLICKHOUSE_HOST: clickhouse
+      FOX_CLICKHOUSE_PORT: "8123"
+      FOX_CLICKHOUSE_DATABASE: foxengine
+      FOX_CLICKHOUSE_USER: default
+      FOX_CLICKHOUSE_PASSWORD: fox
+      FOX_S3_ENDPOINT_URL: http://rustfs:9000
+      FOX_S3_ACCESS_KEY_ID: rustfsadmin
+      FOX_S3_SECRET_ACCESS_KEY: rustfsadmin
+    depends_on:
+      - postgres
+      - clickhouse
+      - rustfs
+
+volumes:
+  pgdata:
+  chdata:
+  rustfsdata:
+  llm_models:
