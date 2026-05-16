@@ -1,0 +1,47 @@
+# FoxEngineReborn
+
+Self-hosted **PII / breach-data search** stack (IntelX-style MVP): ingest normalized leads into ClickHouse, organize with tags, query with a small **DSL**, authenticate with **JWT** or **API keys**. Full product scope lives in [`PLAN.md`](PLAN.md).
+
+## Stack
+
+| Layer        | Tech                                      |
+| ------------ | ----------------------------------------- |
+| API + UI     | FastAPI (Python 3.13), React (Vite + TS)  |
+| Relational   | Postgres 16 (users, roles, tags, audit)   |
+| Analytics    | ClickHouse (`leads` table)              |
+| Object store | RustFS (S3 API)                           |
+| Jobs         | Procrastinate worker (queue ready)        |
+| NL → DSL     | OpenAI-compatible HTTP LLM (see [`docs/LLM.md`](docs/LLM.md)) |
+
+## Quick start (Docker)
+
+1. Copy `.env.example` to `.env`. Set **`FOX_MASTER_KEY`** to a Fernet key from `Fernet.generate_key().decode()` unless you omit it: Docker Compose injects a **dev-only default** when the variable is unset. If your `.env` sets `FOX_MASTER_KEY` to a non-Fernet value (for example a short placeholder), startup will fail until you fix or remove it.
+
+2. From the repo root:
+
+   `docker compose up --build`
+
+   On first start, the optional **`llama-cpp`** service (default in compose) can download a small GGUF model into the `llm_models` volume (several minutes). NL translation is available once `GET /api/health` reports `"llm": "ok"`. To use **LM Studio, Ollama, vLLM, or another host** instead, set `FOX_LLM_BASE_URL` (and related vars) as described in [`docs/LLM.md`](docs/LLM.md).
+
+3. Open **http://localhost:8000**. With the bundled **`backend/seeds/initial_admin.json`** (copied into the API image as `/app/seeds/initial_admin.json`), the first admin is created at startup (`admin` / `changeme` by default); the setup wizard is skipped. Delete or edit that JSON before building if you prefer the interactive setup flow and a one-time API key. Change the password after first login.
+
+API routes are under **`/api`** (same origin as the SPA). Health: **`GET /api/health`**.
+
+## Local dev (no Docker)
+
+- **Backend:** `cd backend && uv sync && export FOX_MASTER_KEY=… && uv run alembic upgrade head` then run Procrastinate schema bootstrap and `uv run foxengine-api` (see `PLAN.md` / `docker-compose.yml` for env vars).
+- **Frontend:** `cd web && npm install && npm run dev` (proxies `/api` to `http://127.0.0.1:8000`).
+
+## Configuration
+
+All app settings use the **`FOX_`** prefix (see `backend/src/foxengine/config.py`). **`FOX_MASTER_KEY`** is required: it encrypts the JWT signing secret stored in Postgres.
+
+NL → DSL uses an **OpenAI-compatible** chat API. See **[`docs/LLM.md`](docs/LLM.md)** for `FOX_LLM_BASE_URL`, optional `FOX_LLM_API_KEY`, health path, bundled model download (`LLM_MODEL_MIN_BYTES`, fixing a bad volume), and examples (bundled llama.cpp, LM Studio, Ollama, vLLM, Docker vs host).
+
+Set **`FOX_LLM_ENABLED=false`** to turn off NL entirely (Query UI hides **Natural language**; `POST /api/query/nl` returns 400).
+
+Compose-only model download knobs: **`LLM_MODEL_URL`**, **`LLM_MODEL_FILE`**, **`LLM_N_GPU_LAYERS`** (use `server-cuda` image and `LLM_N_GPU_LAYERS` > 0 for GPU).
+
+## License / scope
+
+Single-tenant, per-instance distribution — see `PLAN.md` for phases, API surface, and acceptance goals.

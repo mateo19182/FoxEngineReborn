@@ -1,0 +1,100 @@
+"""HTTP client for OpenAI-compatible chat APIs (llama.cpp server, LM Studio, vLLM, etc.)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from foxengine.config import Settings, get_settings
+
+
+class LlmUnavailableError(RuntimeError):
+    pass
+
+
+class LlmError(RuntimeError):
+    pass
+
+
+def _llm_headers(s: Settings) -> dict[str, str]:
+    if s.llm_api_key and str(s.llm_api_key).strip():
+        return {"Authorization": f"Bearer {str(s.llm_api_key).strip()}"}
+    return {}
+
+
+def _health_url(s: Settings) -> str | None:
+    p = (s.llm_health_path or "").strip()
+    if not p or p.lower() in ("off", "none", "skip"):
+        return None
+    return f"{s.llm_base_url.rstrip('/')}/{p.lstrip('/')}"
+
+
+async def llm_health_status() -> str:
+    s = get_settings()
+    if not s.llm_enabled:
+        return "disabled"
+    url = _health_url(s)
+    if url is None:
+        return "skipped"
+    try:
+        async with httpx.AsyncClient(timeout=s.llm_health_timeout_s) as client:
+            r = await client.get(url, headers=_llm_headers(s))
+            if r.status_code == 200:
+                return "ok"
+            return f"error: HTTP {r.status_code}"
+    except Exception as e:
+        return f"error: {e!s}"
+
+
+async def chat_completion_messages(
+    *,
+    messages: list[dict[str, Any]],
+    temperature: float = 0,
+    max_tokens: int = 8000,
+) -> str:
+    s = get_settings()
+    if not s.llm_enabled:
+        raise LlmUnavailableError("LLM is disabled (FOX_LLM_ENABLED=false)")
+
+    url = f"{s.llm_base_url.rstrip('/')}/v1/chat/completions"
+    payload: dict[str, Any] = {
+        "model": s.llm_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=s.llm_timeout_s) as client:
+            r = await client.post(url, json=payload, headers=_llm_headers(s))
+    except httpx.TimeoutException as e:
+        raise LlmError("LLM request timed out") from e
+    except httpx.RequestError as e:
+        raise LlmUnavailableError(f"LLM unreachable: {e}") from e
+
+    if r.status_code >= 500:
+        raise LlmUnavailableError(f"LLM server error: HTTP {r.status_code}")
+    if r.status_code != 200:
+        raise LlmError(f"LLM rejected request: HTTP {r.status_code}: {r.text[:500]}")
+
+    data = r.json()
+    print(f"[LLM_CLIENT] Response status: {r.status_code}", flush=True)
+    print(f"[LLM_CLIENT] Response data: {data}", flush=True)
+    try:
+        content = str(data["choices"][0]["message"]["content"]).strip()
+        print(f"[LLM_CLIENT] Extracted content: {content!r}", flush=True)
+        return content
+    except (KeyError, IndexError, TypeError) as e:
+        raise LlmError("unexpected LLM response shape") from e
+
+
+async def chat_completion(*, system: str, user: str) -> str:
+    return await chat_completion_messages(
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0,
+        max_tokens=8000,
+    )

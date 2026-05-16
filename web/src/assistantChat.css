@@ -1,0 +1,72 @@
+/* react-chat-widget — align with FoxEngine theme */
+
+.rcw-launcher {
+  background: var(--accent) !important;
+  box-shadow: var(--shadow);
+}
+
+.rcw-launcher > img {
+  filter: brightness(0) invert(1);
+}
+
+.rcw-widget-container {
+  bottom: 84px !important;
+  right: 20px !important;
+  font-family: var(--font) !important;
+  box-shadow: var(--shadow) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius) !important;
+  overflow: hidden;
+}
+
+.rcw-widget-container .rcw-conversation-container {
+  background: var(--bg-elevated) !important;
+  color: var(--text) !important;
+}
+
+.rcw-widget-container .rcw-header {
+  background: var(--bg-input) !important;
+  color: var(--text) !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+
+.rcw-widget-container .rcw-header .rcw-title {
+  color: var(--text) !important;
+}
+
+.rcw-widget-container .rcw-header .rcw-subtitle {
+  color: var(--text-muted) !important;
+}
+
+.rcw-widget-container .rcw-message-text {
+  color: var(--text) !important;
+}
+
+.rcw-widget-container .rcw-client .rcw-message-text {
+  background: var(--accent-soft) !important;
+  border: 1px solid var(--border-strong);
+}
+
+.rcw-widget-container .rcw-response .rcw-message-text {
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border);
+}
+
+.rcw-widget-container .rcw-footer {
+  background: var(--bg-elevated) !important;
+  border-top: 1px solid var(--border) !important;
+}
+
+.rcw-widget-container .rcw-footer .rcw-message-box {
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border-strong) !important;
+  color: var(--text) !important;
+}
+
+.rcw-widget-container .rcw-send {
+  background: var(--accent) !important;
+}
+
+.rcw-widget-container .rcw-close-button {
+  background: transparent !important;
+}
