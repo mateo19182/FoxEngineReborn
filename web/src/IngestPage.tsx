@@ -2,6 +2,9 @@ import { useMemo, useRef, useState } from "react";
 import { api, getToken, onUnauthorized } from "./api";
 import { DocTip } from "./DocTip";
 
+const COLUMN_MAP_SAMPLE_ROW_COUNT = 5;
+const COLUMN_MAP_DISCARD_VALUE = "__discard__";
+
 const FALLBACK_CANONICAL_FIELDS = [
   "phone",
   "email",
@@ -96,6 +99,10 @@ function bestGuessFor(file: PreviewFile, header: string): ColumnGuess | null {
     return { field: recommended, confidence: match?.confidence ?? 1 };
   }
   return file.column_guesses?.[header]?.[0] ?? null;
+}
+
+function isDiscardSelection(value: string | undefined): boolean {
+  return value === COLUMN_MAP_DISCARD_VALUE;
 }
 
 function confidenceLabel(value: number | undefined): string {
@@ -308,11 +315,15 @@ export function IngestPage() {
         },
       });
       const currentFileSelections = columnSelectionsByFile[filePreview.inner_name] ?? {};
+      const mergedSelections = { ...currentFileSelections };
+      for (const [header, targetField] of Object.entries(data.column_map)) {
+        if (isDiscardSelection(currentFileSelections[header])) continue;
+        mergedSelections[header] = targetField;
+      }
       updateColumnSelections({
         ...columnSelectionsByFile,
         [filePreview.inner_name]: {
-          ...currentFileSelections,
-          ...data.column_map,
+          ...mergedSelections,
         },
       });
       setMsg(`Local LLM suggested ${Object.keys(data.column_map).length} CSV mappings.`);
@@ -539,7 +550,7 @@ export function IngestPage() {
             <div className="field">
               <div className="label-row">
                 <span>CSV column mapping</span>
-                <DocTip text="Preview fills the best guess for each CSV header. Change any target field before uploading; this map overrides auto-detected CSV mappings." />
+                <DocTip text="Preview fills the best guess for each CSV header. Set a field to Auto to keep fallback behavior, or Discard to skip that source column entirely." />
               </div>
               <div className="column-map-stack">
                 {csvPreviewFiles.map((item) => (
@@ -561,20 +572,43 @@ export function IngestPage() {
                         {suggestingInnerName === item.inner_name ? "Asking LLM..." : "Suggest with local LLM"}
                       </button>
                     </div>
+                    <div className="column-map-card__meta">
+                      {(() => {
+                        const values = Object.values(columnSelectionsByFile[item.inner_name] ?? {});
+                        const mappedCount = values.filter(
+                          (value) => value && !isDiscardSelection(value),
+                        ).length;
+                        const discardedCount = values.filter((value) => isDiscardSelection(value)).length;
+                        return (
+                          <>
+                            <span>{mappedCount} mapped</span>
+                            <span>{discardedCount} discarded</span>
+                            <span>{Math.max((item.headers ?? []).length - mappedCount - discardedCount, 0)} auto</span>
+                          </>
+                        );
+                      })()}
+                    </div>
                     <div className="column-map-table-wrap">
                       <table className="column-map-table">
                         <thead>
                           <tr>
                             <th>Source header</th>
-                            <th>Best guess</th>
-                            <th>Alternates</th>
-                            <th>Target field</th>
+                            <th>Detected</th>
+                            <th>Other guesses</th>
+                            <th>Preview (first {COLUMN_MAP_SAMPLE_ROW_COUNT} rows)</th>
+                            <th>Action</th>
                           </tr>
                         </thead>
                         <tbody>
                           {(item.headers ?? []).map((header) => {
                             const bestGuess = bestGuessFor(item, header);
                             const guesses = item.column_guesses?.[header] ?? [];
+                            const previewValues = (item.sample_rows ?? [])
+                              .slice(0, COLUMN_MAP_SAMPLE_ROW_COUNT)
+                              .map((row, rowIndex) => ({
+                                row: rowIndex + 1,
+                                value: row[header] ?? "",
+                              }));
                             return (
                               <tr key={`${item.inner_name}:${header}`}>
                                 <td>
@@ -603,10 +637,35 @@ export function IngestPage() {
                                     <span className="muted">None</span>
                                   )}
                                 </td>
+                                <td className="column-map-preview-cell">
+                                  {previewValues.length ? (
+                                    <ul className="column-map-preview-list">
+                                      {previewValues.map((entry) => (
+                                        <li key={`${item.inner_name}:${header}:preview:${entry.row}`}>
+                                          <span className="column-map-preview-row">{entry.row}.</span>
+                                          <span
+                                            className={
+                                              entry.value ? "column-map-preview-value" : "column-map-preview-empty"
+                                            }
+                                          >
+                                            {entry.value || "—"}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  ) : (
+                                    <span className="muted">No sample rows</span>
+                                  )}
+                                </td>
                                 <td>
                                   <select
                                     aria-label={`Target field for ${header}`}
                                     value={columnSelectionsByFile[item.inner_name]?.[header] ?? ""}
+                                    className={
+                                      isDiscardSelection(columnSelectionsByFile[item.inner_name]?.[header])
+                                        ? "column-map-select--discard"
+                                        : undefined
+                                    }
                                     onChange={(event) =>
                                       updateColumnSelections({
                                         ...columnSelectionsByFile,
@@ -617,7 +676,8 @@ export function IngestPage() {
                                       })
                                     }
                                   >
-                                    <option value="">Unmapped</option>
+                                    <option value="">Auto (leave unmapped)</option>
+                                    <option value={COLUMN_MAP_DISCARD_VALUE}>Discard column</option>
                                     {canonicalFields.map((field) => (
                                       <option key={field} value={field}>
                                         {field}

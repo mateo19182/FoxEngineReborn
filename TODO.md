@@ -9,3 +9,6 @@
 - test data 
     - /mnt/data/stuff
     - /mnt/data/hmm/ultimateparser
+
+- hash files to prevent dupes
+

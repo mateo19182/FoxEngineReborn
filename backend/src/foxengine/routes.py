@@ -924,7 +924,7 @@ def _preview_file_payload(
         "headers": d.headers,
         "column_guesses": d.column_guesses,
         "recommended_column_map": d.recommended_column_map,
-        "sample_rows": d.sample_rows[:15],
+        "sample_rows": d.sample_rows[:10],
         "size": len(blob),
     }
     staged = {

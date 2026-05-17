@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { api, setToken } from "./api";
+import { InformaticEyeMark } from "./InformaticEyeMark";
 
 export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
+    setBusy(true);
     try {
       const res = await api<{ access_token: string }>("/auth/login", {
         method: "POST",
@@ -18,23 +21,34 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
       onLoggedIn();
     } catch (ex) {
       setErr(String(ex));
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <div className="layout main-area auth-card">
-      <header className="page-head">
-        <div>
-          <h1>Sign in</h1>
-          <p className="lead">Use the credentials issued during setup or by an administrator.</p>
-        </div>
-      </header>
+    <div className="auth-gate" aria-labelledby="login-title">
+      <div className="auth-gate__ambient" aria-hidden />
+      <div className="auth-gate__card">
+        <header className="auth-gate__brand">
+          <span className="auth-gate__mark" aria-hidden>
+            <InformaticEyeMark />
+          </span>
+          <h1 id="login-title" className="auth-gate__title">
+            FoxEngine
+          </h1>
+        </header>
 
-      <section className="panel">
-        <form onSubmit={submit}>
+        <form className="auth-gate__form" onSubmit={submit}>
           <div className="field">
             <label htmlFor="login-user">Username</label>
-            <input id="login-user" value={username} onChange={(e) => setUsername(e.target.value)} required />
+            <input
+              id="login-user"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              required
+            />
           </div>
           <div className="field">
             <label htmlFor="login-pass">Password</label>
@@ -43,15 +57,16 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: () => void }) {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
               required
             />
           </div>
-          {err ? <p className="error">{err}</p> : null}
-          <div className="btn-row">
-            <button type="submit">Login</button>
-          </div>
+          {err ? <p className="error auth-gate__error">{err}</p> : null}
+          <button type="submit" className="auth-gate__submit" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
         </form>
-      </section>
+      </div>
     </div>
   );
 }

@@ -115,7 +115,8 @@ button:disabled {
 }
 
 .layout {
-  max-width: 920px;
+  width: 100%;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 0 1.5rem 3rem;
 }
@@ -970,6 +971,26 @@ button:disabled {
   margin-top: 0.2rem;
 }
 
+.column-map-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.column-map-card__meta span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
 .column-map-table-wrap {
   overflow-x: auto;
 }
@@ -985,8 +1006,52 @@ button:disabled {
   font-size: 0.78rem;
 }
 
+.column-map-preview-cell {
+  min-width: 14rem;
+}
+
+.column-map-preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.15rem;
+  max-height: 10.5rem;
+  overflow: auto;
+}
+
+.column-map-preview-list li {
+  display: grid;
+  grid-template-columns: 1.4rem 1fr;
+  gap: 0.3rem;
+  align-items: baseline;
+}
+
+.column-map-preview-row {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-align: right;
+}
+
+.column-map-preview-value,
+.column-map-preview-empty {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.column-map-preview-empty {
+  color: var(--text-muted);
+}
+
 .column-map-table select {
   min-width: 11rem;
+}
+
+.column-map-select--discard {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-strong));
+  background: color-mix(in srgb, var(--danger) 11%, var(--bg-input));
 }
 
 table {
@@ -1318,6 +1383,101 @@ tbody tr:hover td {
 .auth-card {
   max-width: 400px;
   margin: 10vh auto 0;
+}
+
+.auth-gate {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem 1.25rem;
+  overflow: hidden;
+}
+
+.auth-gate__ambient {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 55% 42% at 50% 38%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 68%),
+    radial-gradient(ellipse 80% 50% at 50% 100%, color-mix(in srgb, #4a5d9e 14%, transparent), transparent 62%);
+  opacity: 0.7;
+}
+
+.auth-gate__card {
+  position: relative;
+  width: min(100%, 22rem);
+  padding: 2rem 1.65rem 1.75rem;
+  border-radius: calc(var(--radius) + 4px);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 80%, var(--accent));
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent) inset,
+    0 24px 64px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(18px);
+}
+
+.auth-gate__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 1.65rem;
+}
+
+.auth-gate__mark {
+  display: grid;
+  place-items: center;
+  width: 4.25rem;
+  height: 4.25rem;
+  border-radius: 16px;
+  overflow: hidden;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 92%, #fff) 0%,
+    var(--accent) 55%,
+    color-mix(in srgb, var(--accent) 40%, #1a1f38) 100%
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 16px 40px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.auth-gate__mark .sidebar-brand__mark-eye {
+  padding: 0.2rem;
+}
+
+.auth-gate__title {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  background: linear-gradient(90deg, var(--text) 0%, color-mix(in srgb, var(--text) 68%, var(--accent)) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.auth-gate__form .field {
+  margin-bottom: 0.85rem;
+}
+
+.auth-gate__form .field label {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+}
+
+.auth-gate__error {
+  margin: 0 0 0.65rem;
+  text-align: center;
+}
+
+.auth-gate__submit {
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.62rem 1rem;
 }
 
 .doc-tip {

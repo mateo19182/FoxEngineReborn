@@ -321,7 +321,7 @@ def _build_recommended_map(headers: list[str]) -> dict[str, str]:
 
 
 def _sample_csv_rows(
-    text: str, delim: str, headers: list[str], n: int = 12
+    text: str, delim: str, headers: list[str], n: int = 10
 ) -> list[dict[str, str]]:
     reader = csv.reader(io.StringIO(text), delimiter=delim)
     rows = list(reader)
@@ -338,7 +338,7 @@ def _sample_csv_rows(
     return out
 
 
-def _sample_jsonl_rows(lines: list[str], n: int = 12) -> list[dict[str, str]]:
+def _sample_jsonl_rows(lines: list[str], n: int = 10) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for line in lines[:n]:
         try:

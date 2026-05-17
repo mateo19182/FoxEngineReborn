@@ -153,12 +153,17 @@ async def chat_completion_messages_stream(
         raise LlmUnavailableError(f"LLM unreachable: {e}") from e
 
 
-async def chat_completion(*, system: str, user: str) -> str:
+async def chat_completion(
+    *,
+    system: str,
+    user: str,
+    max_tokens: int = 8000,
+) -> str:
     return await chat_completion_messages(
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         temperature=0,
-        max_tokens=8000,
+        max_tokens=max_tokens,
     )
