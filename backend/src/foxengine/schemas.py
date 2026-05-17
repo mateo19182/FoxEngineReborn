@@ -2,6 +2,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, model_validator
 
+StorageStore = Literal["uploads", "exports"]
+
 
 class SetupStatusResponse(BaseModel):
     needs_setup: bool
@@ -165,6 +167,7 @@ class AssistantChatResponse(BaseModel):
 class ExportRequest(BaseModel):
     dsl: str
     format: Literal["csv", "jsonl"] = "csv"
+    row_limit: int | None = Field(default=None, ge=1)
 
 
 class JobOut(BaseModel):
@@ -205,10 +208,25 @@ class UploadBrowseEntry(BaseModel):
     last_modified: str | None = None
 
 
-class UploadBrowseResponse(BaseModel):
+class StorageFolderContext(BaseModel):
+    kind: Literal["none", "ingest_batch", "export_job"] = "none"
+    batch_id: str | None = None
+    batch_name: str | None = None
+    source_filename: str | None = None
+    tag_names: list[str] = Field(default_factory=list)
+    job_id: str | None = None
+    job_type: str | None = None
+    job_state: str | None = None
+    export_dsl: str | None = None
+    export_rows: int | None = None
+
+
+class StorageBrowseResponse(BaseModel):
+    store: StorageStore
     prefix: str
     entries: list[UploadBrowseEntry]
+    folder: StorageFolderContext = Field(default_factory=StorageFolderContext)
 
 
-class UploadPresignResponse(BaseModel):
+class StoragePresignResponse(BaseModel):
     url: str

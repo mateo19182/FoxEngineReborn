@@ -1,23 +1,19 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-const root = path.dirname(fileURLToPath(import.meta.url));
+const devApiProxy = process.env.VITE_DEV_API_PROXY ?? "http://127.0.0.1:8000";
+const devInDocker = Boolean(process.env.VITE_DEV_API_PROXY);
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   server: {
+    host: devInDocker,
+    port: 5173,
     proxy: {
-      "/api": "http://127.0.0.1:8000",
-    },
-  },
-  build: {
-    rollupOptions: {
-      input: {
-        main: path.resolve(root, "index.html"),
-        uploads: path.resolve(root, "uploads.html"),
+      "/api": {
+        target: devApiProxy,
+        changeOrigin: true,
+        ws: true,
       },
     },
   },

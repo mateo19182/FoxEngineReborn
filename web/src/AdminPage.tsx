@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { DateRange } from "react-day-picker";
 import { api } from "./api";
+import { AuditDateRangeCalendar } from "./AuditDateRangeCalendar";
 import { DocTip } from "./DocTip";
 import { Modal } from "./Modal";
 
@@ -30,12 +32,26 @@ type ApiKey = { id: string; name: string; created_at: string; last_used_at: stri
 type ModalKind = "createUser" | "changePassword" | "createApiKey" | null;
 
 const AUDIT_PAGE = 40;
-const QUERY_AUDIT_ACTIONS = [
-  "query.run",
-  "query.nl_translate",
-  "export.start",
-  "assistant.chat",
-];
+
+const auditTsDisplay = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
+function formatAuditTs(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : auditTsDisplay.format(d);
+}
+
+/** Inclusive local calendar days as UTC bounds for the API. */
+function auditDateRangeToIsoBounds(range: DateRange | undefined): { isoFrom: string | null; isoTo: string | null } {
+  if (!range?.from) return { isoFrom: null, isoTo: null };
+  const fromD = range.from;
+  const toD = range.to ?? range.from;
+  const start = new Date(fromD.getFullYear(), fromD.getMonth(), fromD.getDate(), 0, 0, 0, 0);
+  const end = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate(), 23, 59, 59, 999);
+  return { isoFrom: start.toISOString(), isoTo: end.toISOString() };
+}
 
 export function AdminPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
@@ -43,7 +59,10 @@ export function AdminPage() {
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditLoadingInitial, setAuditLoadingInitial] = useState(true);
   const [auditLoadingMore, setAuditLoadingMore] = useState(false);
-  const [auditFilter, setAuditFilter] = useState<"all" | "queries">("queries");
+  const [auditActorId, setAuditActorId] = useState<string>("");
+  const [auditActionType, setAuditActionType] = useState<string>("");
+  const [auditDateRange, setAuditDateRange] = useState<DateRange | undefined>(undefined);
+  const [auditActionOptions, setAuditActionOptions] = useState<string[]>([]);
   const [auditDetail, setAuditDetail] = useState<AuditRow | null>(null);
   const auditSentinelRef = useRef<HTMLDivElement | null>(null);
   const auditNextOffsetRef = useRef(0);
@@ -93,7 +112,7 @@ export function AdminPage() {
     return parts.join(" · ");
   }
 
-  function auditCardSummary(row: AuditRow): string {
+  function auditEntrySummary(row: AuditRow): string {
     const q = auditQuerySummary(row);
     if (q) return q;
     const d = row.details;
@@ -120,12 +139,21 @@ export function AdminPage() {
         setAuditLoadingMore(true);
       }
       try {
+        const { isoFrom, isoTo } = auditDateRangeToIsoBounds(auditDateRange);
+        if (isoFrom && isoTo && isoFrom > isoTo) {
+          setErr("Date range is invalid: start must be before or equal to end.");
+          return;
+        }
+
         const params = new URLSearchParams();
         params.set("limit", String(AUDIT_PAGE));
         params.set("offset", String(offset));
-        if (auditFilter === "queries") {
-          for (const a of QUERY_AUDIT_ACTIONS) params.append("actions", a);
+        if (auditActionType) {
+          params.append("actions", auditActionType);
         }
+        if (auditActorId) params.set("actor_id", auditActorId);
+        if (isoFrom) params.set("ts_from", isoFrom);
+        if (isoTo) params.set("ts_to", isoTo);
         const r = await api<{ total: number; items: AuditRow[] }>(`/audit-log?${params.toString()}`);
         auditTotalRef.current = r.total;
         setAuditTotal(r.total);
@@ -157,7 +185,7 @@ export function AdminPage() {
         setAuditLoadingMore(false);
       }
     },
-    [auditFilter],
+    [auditActorId, auditActionType, auditDateRange],
   );
 
   useEffect(() => {
@@ -211,6 +239,12 @@ export function AdminPage() {
         await Promise.all([loadUsers(), loadAccount()]);
       } catch (e) {
         setErr(String(e));
+      }
+      try {
+        const actions = await api<string[]>("/audit-log/actions");
+        setAuditActionOptions(actions);
+      } catch {
+        setAuditActionOptions([]);
       }
     })();
   }, []);
@@ -388,39 +422,86 @@ export function AdminPage() {
 
       <section className="panel">
         <div className="panel__head">
-          <h2>Query and audit log</h2>
-          <div className="audit-filter">
-            <label htmlFor="audit-filter">Show</label>
-            <select
-              id="audit-filter"
-              value={auditFilter}
-              onChange={(e) => setAuditFilter(e.target.value as "all" | "queries")}
-            >
-              <option value="queries">Query and export activity</option>
-              <option value="all">All events</option>
-            </select>
-          </div>
+          <h2>Audit log</h2>
         </div>
-        <p className="hint" style={{ marginTop: 0 }}>
+        <div className="audit-filters">
+          <div className="audit-toolbar">
+            <div className="audit-toolbar__field">
+              <label htmlFor="audit-action-type">Action type</label>
+              <select
+                id="audit-action-type"
+                value={auditActionType}
+                onChange={(e) => setAuditActionType(e.target.value)}
+              >
+                <option value="">Any</option>
+                {auditActionOptions.map((a) => (
+                  <option key={a} value={a}>
+                    {a}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="audit-toolbar__field">
+              <label htmlFor="audit-user">User</label>
+              <select
+                id="audit-user"
+                value={auditActorId}
+                onChange={(e) => setAuditActorId(e.target.value)}
+              >
+                <option value="">Any</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.username}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <AuditDateRangeCalendar value={auditDateRange} onChange={setAuditDateRange} />
+        </div>
+        <p className="hint audit-hint">
           {auditLoadingInitial
             ? "Loading…"
-            : `Loaded ${auditItems.length} of ${auditTotal} entries (newest first). Scroll for more.`}
+            : auditTotal === 0
+              ? "No matching entries."
+              : `Showing ${auditItems.length} of ${auditTotal} (newest first). Scroll to load more.`}
         </p>
-        <ul className="audit-card-grid">
-          {auditItems.map((a) => (
-            <li key={a.id}>
-              <button type="button" className="audit-card" onClick={() => setAuditDetail(a)}>
-                <span className="audit-card__time mono">{a.ts}</span>
-                <span className="audit-card__action">{a.action}</span>
-                <span className="audit-card__actor">
-                  {a.actor_username ?? "—"}
-                  <span className="muted"> ({a.actor_kind})</span>
-                </span>
-                <span className="audit-card__summary muted">{auditCardSummary(a)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div className="audit-table-wrap">
+          <table className="audit-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Action</th>
+                <th>Actor</th>
+                <th>Summary</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auditItems.map((a) => (
+                <tr
+                  key={a.id}
+                  className="audit-row"
+                  tabIndex={0}
+                  onClick={() => setAuditDetail(a)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setAuditDetail(a);
+                    }
+                  }}
+                >
+                  <td className="audit-table__time">{formatAuditTs(a.ts)}</td>
+                  <td className="mono audit-table__action">{a.action}</td>
+                  <td className="audit-table__actor">
+                    {a.actor_username ?? "—"}
+                    <span className="muted"> ({a.actor_kind})</span>
+                  </td>
+                  <td className="muted audit-table__summary">{auditEntrySummary(a)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <div ref={auditSentinelRef} className="audit-sentinel" aria-hidden />
         {auditLoadingMore ? <p className="hint audit-loading-more">Loading more…</p> : null}
       </section>
@@ -505,7 +586,7 @@ export function AdminPage() {
           <div className="audit-detail">
             <dl className="audit-detail__dl">
               <dt>Time</dt>
-              <dd className="mono">{auditDetail.ts}</dd>
+              <dd>{formatAuditTs(auditDetail.ts)}</dd>
               <dt>Action</dt>
               <dd>{auditDetail.action}</dd>
               <dt>Actor</dt>

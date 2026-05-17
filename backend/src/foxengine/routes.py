@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import secrets
 import time
 from datetime import UTC, date, datetime
@@ -11,6 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from foxengine import schemas
@@ -31,7 +33,7 @@ from foxengine.db.models import (
 from foxengine.deps import AdminDep, OperatorDep, PrincipalDep, SessionDep, ViewerDep
 from foxengine.security import hash_password, issue_jwt, new_api_key_material, verify_password
 from foxengine.services.archive_unpack import merge_text_parts, unpack_archive
-from foxengine.services.assistant_chat import run_assistant_turn
+from foxengine.services.assistant_chat import run_assistant_stream, run_assistant_turn
 from foxengine.services.format_detect import analyze_text_payload, detect_for_ingest
 from foxengine.services.ingest import ingest_sync
 from foxengine.services.job_queries import compile_leads_where, merged_profile_select
@@ -46,6 +48,13 @@ from foxengine.settings_store import (
 from foxengine.tasks import foxengine_bulk_tag, foxengine_export, foxengine_ingest_file
 
 router = APIRouter()
+
+_BATCH_INGEST_PREFIX = re.compile(
+    r"^uploads/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/$"
+)
+_EXPORT_JOB_PREFIX = re.compile(
+    r"^exports/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/$"
+)
 
 
 def _audit(
@@ -295,21 +304,63 @@ async def create_user(
     )
 
 
+def _audit_ts_param(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+@router.get("/audit-log/actions", response_model=list[str])
+async def audit_log_distinct_actions(session: SessionDep, _: AdminDep) -> list[str]:
+    res = await session.execute(select(AuditLog.action).distinct().order_by(AuditLog.action.asc()))
+    return [str(x) for x in res.scalars().all()]
+
+
 @router.get("/audit-log", response_model=schemas.AuditLogListResponse)
 async def audit_log_list(
     session: SessionDep,
     _: AdminDep,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    actions: list[str] | None = Query(default=None),
+    actor_id: UUID | None = None,
+    action_contains: str | None = Query(default=None, max_length=128),
+    ts_from: datetime | None = None,
+    ts_to: datetime | None = None,
 ) -> schemas.AuditLogListResponse:
-    total = int(await session.scalar(select(func.count()).select_from(AuditLog)) or 0)
-    res = await session.execute(
+    ts_lo = _audit_ts_param(ts_from) if ts_from is not None else None
+    ts_hi = _audit_ts_param(ts_to) if ts_to is not None else None
+    if ts_lo is not None and ts_hi is not None and ts_lo > ts_hi:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "ts_from must be before or equal to ts_to",
+        )
+    conditions: list[Any] = []
+    if actions:
+        conditions.append(AuditLog.action.in_(tuple(actions)))
+    if actor_id is not None:
+        conditions.append(AuditLog.actor_id == actor_id)
+    if action_contains is not None and (frag := action_contains.strip()):
+        conditions.append(AuditLog.action.ilike(f"%{frag}%"))
+    if ts_lo is not None:
+        conditions.append(AuditLog.ts >= ts_lo)
+    if ts_hi is not None:
+        conditions.append(AuditLog.ts <= ts_hi)
+
+    count_stmt = select(func.count()).select_from(AuditLog)
+    list_stmt = (
         select(AuditLog, User.username)
         .outerjoin(User, AuditLog.actor_id == User.id)
         .order_by(AuditLog.ts.desc())
         .limit(limit)
         .offset(offset)
     )
+    if conditions:
+        count_stmt = count_stmt.where(*conditions)
+        list_stmt = list_stmt.where(*conditions)
+
+    total = int(await session.scalar(count_stmt) or 0)
+    res = await session.execute(list_stmt)
     items: list[schemas.AuditLogEntry] = []
     for log_row, actor_username in res.all():
         ip_s = log_row.ip
@@ -684,6 +735,47 @@ async def assistant_chat(
     return schemas.AssistantChatResponse(reply=reply)
 
 
+@router.post("/assistant/chat/stream")
+async def assistant_chat_stream(
+    request: Request,
+    body: schemas.AssistantChatRequest,
+    session: SessionDep,
+    principal: ViewerDep,
+) -> StreamingResponse:
+    if not get_settings().llm_enabled:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Assistant is disabled on this instance (FOX_LLM_ENABLED=false).",
+        )
+    history: list[tuple[str, str]] = [(m.role, m.content) for m in body.messages]
+
+    async def gen():
+        try:
+            async for chunk in run_assistant_stream(session, principal, history=history):
+                yield chunk
+        except Exception as e:
+            err = json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
+            yield f"data: {err}\n\n".encode()
+            done = json.dumps({"type": "done"}, ensure_ascii=False)
+            yield f"data: {done}\n\n".encode()
+
+    _audit(
+        request,
+        principal,
+        "assistant.chat",
+        details={"stream": True, "turns": len(body.messages)},
+    )
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 def _parse_s3_uri(uri: str) -> tuple[str, str]:
     if not uri.startswith("s3://"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid download uri")
@@ -730,39 +822,129 @@ def _inner_storage_key(inner_name: str) -> str:
     return inner_name.replace("/", "_").replace("\\", "_")[:220]
 
 
-def _normalize_uploads_list_prefix(raw: str) -> str:
+def _normalize_storage_prefix(store: schemas.StorageStore, raw: str) -> str:
     p = raw.strip().lstrip("/")
     if ".." in p or "//" in p:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid prefix")
+    root = "uploads/" if store == "uploads" else "exports/"
     if not p:
-        return "uploads/"
-    if not p.startswith("uploads/"):
+        return root
+    need = "uploads/" if store == "uploads" else "exports/"
+    if not p.startswith(need):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "prefix must be empty or start with uploads/",
+            f"prefix must start with {need}",
         )
     return p if p.endswith("/") else f"{p}/"
 
 
-def _uploads_object_key_allowed(key: str) -> bool:
+def _storage_object_key_allowed(store: schemas.StorageStore, key: str) -> bool:
     k = key.strip().lstrip("/")
     if ".." in k or "//" in k:
         return False
-    return k.startswith("uploads/")
+    if store == "uploads":
+        return k.startswith("uploads/")
+    return k.startswith("exports/")
 
 
-def _uploads_browse_child_name(parent_prefix: str, child_prefix: str) -> str:
+def _storage_browse_child_name(parent_prefix: str, child_prefix: str) -> str:
     rest = child_prefix[len(parent_prefix) :].rstrip("/")
     return rest.split("/")[-1]
 
 
-@router.get("/uploads/browse", response_model=schemas.UploadBrowseResponse)
-async def uploads_browse(
+def _bucket_for_store(s, store: schemas.StorageStore) -> str:
+    if store == "uploads":
+        return s.s3_bucket_uploads
+    return s.s3_bucket_exports
+
+
+async def _tag_names_for_batch(session: AsyncSession, batch_id: UUID) -> list[str]:
+    ch = await get_ch_client()
+    qr = await ch.query(
+        "SELECT arrayDistinct(arrayFlatten(groupArray(tag_ids))) AS ids "
+        "FROM leads WHERE batch_id = {bid:UUID}",
+        parameters={"bid": batch_id},
+    )
+    row = qr.first_row
+    if not row or row[0] is None:
+        return []
+    ids_raw = row[0]
+    if not ids_raw:
+        return []
+    tag_uuids: list[UUID] = []
+    for x in ids_raw:
+        if x is None:
+            continue
+        try:
+            tag_uuids.append(UUID(str(x)))
+        except ValueError:
+            continue
+    if not tag_uuids:
+        return []
+    res = await session.execute(
+        select(Tag.name).where(Tag.id.in_(tag_uuids), Tag.deleted_at.is_(None)).order_by(Tag.name)
+    )
+    return [str(n) for n in res.scalars().all()]
+
+
+async def _storage_folder_context(
+    session: AsyncSession,
+    store: schemas.StorageStore,
+    normalized_prefix: str,
+) -> schemas.StorageFolderContext:
+    if store == "uploads":
+        m = _BATCH_INGEST_PREFIX.match(normalized_prefix)
+        if not m:
+            return schemas.StorageFolderContext()
+        bid = UUID(m.group(1))
+        b = await session.scalar(select(Batch).where(Batch.id == bid, Batch.deleted_at.is_(None)))
+        tags = await _tag_names_for_batch(session, bid)
+        if b is None:
+            return schemas.StorageFolderContext(
+                kind="ingest_batch",
+                batch_id=str(bid),
+                tag_names=tags,
+            )
+        return schemas.StorageFolderContext(
+            kind="ingest_batch",
+            batch_id=str(b.id),
+            batch_name=b.name,
+            source_filename=b.source_filename,
+            tag_names=tags,
+        )
+    m = _EXPORT_JOB_PREFIX.match(normalized_prefix)
+    if not m:
+        return schemas.StorageFolderContext()
+    jid = UUID(m.group(1))
+    j = await session.scalar(select(Job).where(Job.id == jid))
+    if j is None:
+        return schemas.StorageFolderContext(
+            kind="export_job",
+            job_id=str(jid),
+        )
+    ck = dict(j.checkpoint or {})
+    dsl = ck.get("dsl")
+    dsl_s = str(dsl).strip() if isinstance(dsl, str) else None
+    return schemas.StorageFolderContext(
+        kind="export_job",
+        job_id=str(j.id),
+        job_type=j.type,
+        job_state=j.state,
+        export_dsl=dsl_s,
+        export_rows=int(j.processed_rows),
+    )
+
+
+@router.get("/storage/browse", response_model=schemas.StorageBrowseResponse)
+async def storage_browse(
+    session: SessionDep,
     _: OperatorDep,
-    prefix: str = Query("", description="S3 prefix under the uploads bucket (uploads/…)"),
-) -> schemas.UploadBrowseResponse:
-    normalized = _normalize_uploads_list_prefix(prefix)
+    store: schemas.StorageStore = Query("uploads"),
+    prefix: str = Query("", description="Prefix within the chosen store (uploads/… or exports/…)"),
+) -> schemas.StorageBrowseResponse:
+    normalized = _normalize_storage_prefix(store, prefix)
     s = get_settings()
+    bucket = _bucket_for_store(s, store)
     entries: list[schemas.UploadBrowseEntry] = []
     session_boto = aioboto3.Session()
     async with session_boto.client(
@@ -773,7 +955,7 @@ async def uploads_browse(
         region_name=s.s3_region,
     ) as c:
         resp = await c.list_objects_v2(
-            Bucket=s.s3_bucket_uploads,
+            Bucket=bucket,
             Prefix=normalized,
             Delimiter="/",
         )
@@ -781,7 +963,7 @@ async def uploads_browse(
             full = str(cp["Prefix"])
             entries.append(
                 schemas.UploadBrowseEntry(
-                    key=_uploads_browse_child_name(normalized, full),
+                    key=_storage_browse_child_name(normalized, full),
                     is_directory=True,
                 )
             )
@@ -802,19 +984,27 @@ async def uploads_browse(
                     last_modified=lm.isoformat() if lm is not None else None,
                 )
             )
-    return schemas.UploadBrowseResponse(prefix=normalized, entries=entries)
+    folder = await _storage_folder_context(session, store, normalized)
+    return schemas.StorageBrowseResponse(
+        store=store,
+        prefix=normalized,
+        entries=entries,
+        folder=folder,
+    )
 
 
-@router.get("/uploads/presign", response_model=schemas.UploadPresignResponse)
-async def uploads_presign(
+@router.get("/storage/presign", response_model=schemas.StoragePresignResponse)
+async def storage_presign(
     request: Request,
     principal: OperatorDep,
-    key: str = Query(..., min_length=1, description="Full S3 object key under uploads/"),
-) -> schemas.UploadPresignResponse:
+    store: schemas.StorageStore = Query("uploads"),
+    key: str = Query(..., min_length=1, description="Full object key within the chosen store"),
+) -> schemas.StoragePresignResponse:
     raw = key.strip().lstrip("/")
-    if not _uploads_object_key_allowed(raw):
+    if not _storage_object_key_allowed(store, raw):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid key")
     s = get_settings()
+    bucket = _bucket_for_store(s, store)
     session_boto = aioboto3.Session()
     async with session_boto.client(
         "s3",
@@ -825,16 +1015,16 @@ async def uploads_presign(
     ) as c:
         url = await c.generate_presigned_url(
             "get_object",
-            Params={"Bucket": s.s3_bucket_uploads, "Key": raw},
+            Params={"Bucket": bucket, "Key": raw},
             ExpiresIn=3600,
         )
     _audit(
         request,
         principal,
-        "uploads.presign",
-        details={"key": raw},
+        "storage.presign",
+        details={"store": store, "key": raw},
     )
-    return schemas.UploadPresignResponse(url=url)
+    return schemas.StoragePresignResponse(url=url)
 
 
 @router.get("/batches", response_model=list[schemas.BatchOut])
@@ -986,11 +1176,14 @@ async def start_export(
     session: SessionDep,
     principal: ViewerDep,
 ) -> dict[str, str]:
+    ckpt: dict[str, object] = {"dsl": body.dsl, "format": body.format}
+    if body.row_limit is not None:
+        ckpt["row_limit"] = body.row_limit
     job = Job(
         type="export",
         state="queued",
         owner_user_id=principal.user_id,
-        checkpoint={"dsl": body.dsl, "format": body.format},
+        checkpoint=ckpt,
     )
     session.add(job)
     await session.flush()
@@ -1000,7 +1193,11 @@ async def start_export(
         "export.start",
         target_kind="job",
         target_id=str(job.id),
-        details={"dsl": body.dsl, "format": body.format},
+        details={
+            "dsl": body.dsl,
+            "format": body.format,
+            **({"row_limit": body.row_limit} if body.row_limit is not None else {}),
+        },
     )
     await session.commit()
     await foxengine_export.defer_async(job_id=str(job.id))

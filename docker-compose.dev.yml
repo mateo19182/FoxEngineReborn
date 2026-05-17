@@ -1,0 +1,41 @@
+# Hot reload for API + Vite. Use:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Open http://localhost:5173 (Vite proxies /api to the api container).
+
+services:
+  api:
+    volumes:
+      - ./backend/src:/app/src
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        cd /app && alembic upgrade head &&
+        python -c 'from foxengine.bootstrap import ensure_procrastinate_schema; ensure_procrastinate_schema()' &&
+        uvicorn foxengine.main:app --host 0.0.0.0 --port 8000
+        --reload --reload-dir /app/src
+
+  worker:
+    volumes:
+      - ./backend/src:/app/src
+
+  web:
+    image: node:22-bookworm
+    working_dir: /w
+    environment:
+      VITE_DEV_API_PROXY: http://api:8000
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./web:/w
+      - foxengine_web_node_modules:/w/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+    command:
+      - /bin/sh
+      - -c
+      - npm ci && npm run dev -- --host 0.0.0.0 --port 5173
+
+volumes:
+  foxengine_web_node_modules:

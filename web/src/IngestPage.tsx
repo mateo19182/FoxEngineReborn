@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { getToken } from "./api";
 import { DocTip } from "./DocTip";
 
@@ -123,12 +124,6 @@ export function IngestPage() {
           <h1>Ingest file</h1>
           <p className="lead">
             Operator uploads. Supports JSONL, CSV, combo lines, and common archives with optional detection preview.
-          </p>
-          <p className="hint" style={{ marginTop: "0.75rem" }}>
-            <a href="/uploads.html" target="_blank" rel="noopener noreferrer">
-              Browse upload storage
-            </a>{" "}
-            (opens in a new tab)
           </p>
         </div>
       </header>

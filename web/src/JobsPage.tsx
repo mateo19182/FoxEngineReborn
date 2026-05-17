@@ -145,7 +145,6 @@ export function JobsPage() {
                           >
                             Download
                           </button>
-                          <DocTip text="Available when the job finished successfully." />
                         </span>
                       ) : j.type === "ingest" && j.batch_id && j.rejected_rows && j.rejected_rows > 0 ? (
                         <span className="btn-with-tip">

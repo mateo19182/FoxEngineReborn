@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import { api, getToken, setToken } from "./api";
 import { AdminPage } from "./AdminPage";
@@ -8,11 +8,9 @@ import { JobsPage } from "./JobsPage";
 import { LoginPage } from "./LoginPage";
 import { QueryPage } from "./QueryPage";
 import { SetupPage } from "./SetupPage";
+import { StoragePage } from "./StoragePage";
+import { AssistantChatWidget } from "./AssistantChatWidget";
 import { canIngest } from "./roles";
-
-const AssistantChatWidget = lazy(() =>
-  import("./AssistantChatWidget").then((m) => ({ default: m.AssistantChatWidget })),
-);
 
 function Shell({ children }: { children: React.ReactNode }) {
   const [roles, setRoles] = useState<string[]>([]);
@@ -53,6 +51,14 @@ function Shell({ children }: { children: React.ReactNode }) {
               Ingest
             </NavLink>
           ) : null}
+          {operator ? (
+            <NavLink
+              to="/storage"
+              className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
+            >
+              Storage
+            </NavLink>
+          ) : null}
           <NavLink
             to="/jobs"
             className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
@@ -88,11 +94,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       <main className="layout main-area">{children}</main>
-      {llmOn ? (
-        <Suspense fallback={null}>
-          <AssistantChatWidget />
-        </Suspense>
-      ) : null}
+      {llmOn ? <AssistantChatWidget /> : null}
     </>
   );
 }
@@ -222,6 +224,14 @@ function AppRoutes() {
         element={
           <RequireOperator>
             <IngestPage />
+          </RequireOperator>
+        }
+      />
+      <Route
+        path="/storage"
+        element={
+          <RequireOperator>
+            <StoragePage />
           </RequireOperator>
         }
       />

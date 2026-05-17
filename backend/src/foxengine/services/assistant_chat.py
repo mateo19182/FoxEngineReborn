@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
@@ -286,3 +287,93 @@ async def run_assistant_turn(
             }
         )
     return last or "The assistant stopped after too many tool rounds; try a narrower question."
+
+
+def _sse(event: dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
+
+
+async def run_assistant_stream(
+    session: AsyncSession,
+    principal: Principal,
+    *,
+    history: list[tuple[str, str]],
+    max_llm_rounds: int = 8,
+) -> AsyncIterator[bytes]:
+    """Server-sent events: ``delta`` (text chunk), ``done``, ``error``."""
+    from foxengine.services.llm_client import (
+        LlmError,
+        LlmUnavailableError,
+        chat_completion_messages_stream,
+    )
+
+    messages = _history_to_messages(history)
+    if len(messages) <= 1:
+        yield _sse({"type": "delta", "text": "Send a message first."})
+        yield _sse({"type": "done"})
+        return
+
+    try:
+        for _ in range(max_llm_rounds):
+            buf = ""
+            mode: str | None = None
+            async for piece in chat_completion_messages_stream(
+                messages=messages,
+                temperature=0.35,
+                max_tokens=6000,
+            ):
+                buf += piece
+                if mode is None:
+                    lead = buf.lstrip()
+                    if not lead:
+                        continue
+                    if lead[0] == "{":
+                        mode = "hold_json"
+                    else:
+                        mode = "stream_text"
+                        yield _sse({"type": "delta", "text": buf})
+                    continue
+                if mode == "hold_json":
+                    continue
+                yield _sse({"type": "delta", "text": piece})
+
+            if mode is None:
+                if buf.strip():
+                    yield _sse({"type": "delta", "text": buf.strip()})
+                else:
+                    yield _sse({"type": "delta", "text": "Empty model response."})
+                yield _sse({"type": "done"})
+                return
+
+            if mode == "hold_json":
+                tools = parse_fox_tools(buf)
+                if tools:
+                    messages.append({"role": "assistant", "content": buf})
+                    tool_payload = await run_tool_calls(session, principal, tools)
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "Tool results (JSON, for you only):\n"
+                            + json.dumps(tool_payload, ensure_ascii=False),
+                        }
+                    )
+                    continue
+                for i in range(0, len(buf), 48):
+                    yield _sse({"type": "delta", "text": buf[i : i + 48]})
+                yield _sse({"type": "done"})
+                return
+
+            yield _sse({"type": "done"})
+            return
+
+        yield _sse({"type": "delta", "text": "Too many tool rounds; try a narrower question."})
+        yield _sse({"type": "done"})
+    except LlmUnavailableError as e:
+        yield _sse({"type": "error", "message": str(e)})
+        yield _sse({"type": "done"})
+    except LlmError as e:
+        yield _sse({"type": "error", "message": str(e)})
+        yield _sse({"type": "done"})
+    except Exception as e:
+        yield _sse({"type": "error", "message": str(e)})
+        yield _sse({"type": "done"})

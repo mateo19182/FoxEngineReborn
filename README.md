@@ -27,10 +27,25 @@ Self-hosted **PII / breach-data search** stack (IntelX-style MVP): ingest normal
 
 API routes are under **`/api`** (same origin as the SPA). Health: **`GET /api/health`**.
 
+## Docker dev (hot reload)
+
+To change **API Python** or **React** without rebuilding images or restarting the whole stack on every edit:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+Then open **http://localhost:5173**. A **`web`** service runs Vite with HMR; it proxies **`/api`** to the **`api`** container. The API runs **uvicorn `--reload`** with `./backend/src` mounted into the container.
+
+Notes:
+
+- **`worker`** also mounts `./backend/src` but does not auto-restart; run `docker compose restart worker` after changing task/worker code.
+- Rebuild the API image when you change **`backend/pyproject.toml`**, **`Dockerfile`**, or **`alembic/`** (not for everyday edits under `backend/src`).
+
 ## Local dev (no Docker)
 
 - **Backend:** `cd backend && uv sync && export FOX_MASTER_KEY=… && uv run alembic upgrade head` then run Procrastinate schema bootstrap and `uv run foxengine-api` (see `PLAN.md` / `docker-compose.yml` for env vars).
-- **Frontend:** `cd web && npm install && npm run dev` (proxies `/api` to `http://127.0.0.1:8000`).
+- **Frontend:** `cd web && npm install && npm run dev` (proxies `/api` to `http://127.0.0.1:8000` by default; set **`VITE_DEV_API_PROXY`** to point at another API URL).
 
 ## Configuration
 

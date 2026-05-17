@@ -64,6 +64,11 @@ async def run_export_job(job_id: UUID) -> None:
         owner = job.owner_user_id
         where_sql, params = await compile_leads_where(session, dsl)
 
+    row_cap = s.max_export_rows
+    rl_raw = ck.get("row_limit")
+    if isinstance(rl_raw, int) and rl_raw > 0:
+        row_cap = min(row_cap, rl_raw)
+
     base = f"SELECT * FROM leads WHERE {where_sql} ORDER BY ingest_ts DESC"
 
     ch = await get_ch_client()
@@ -78,8 +83,8 @@ async def run_export_job(job_id: UUID) -> None:
     if fmt == "csv":
         csv_writer = csv.writer(buf)
 
-    while total_written < s.max_export_rows:
-        lim = min(batch_size, s.max_export_rows - total_written)
+    while total_written < row_cap:
+        lim = min(batch_size, row_cap - total_written)
         data_sql = f"{base} LIMIT {lim} OFFSET {offset}"
         qr = await ch.query(data_sql, parameters=params, settings=CH_SETTINGS)
         rows = list(qr.named_results())

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import { DocTip } from "./DocTip";
 import { DslHelpModal } from "./DslHelpModal";
+import { ExportModal } from "./ExportModal";
+import { Modal } from "./Modal";
 import { QueryNlModal } from "./QueryNlModal";
 import { TagAddModal } from "./TagAddModal";
 import { TagsModal } from "./TagsModal";
@@ -38,6 +39,8 @@ export function QueryPage() {
   const [tagsModalOpen, setTagsModalOpen] = useState(false);
   const [dslHelpOpen, setDslHelpOpen] = useState(false);
   const [nlModalOpen, setNlModalOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [detailRowIndex, setDetailRowIndex] = useState<number | null>(null);
 
   const columns = useMemo(() => {
     if (!res?.rows.length) return [];
@@ -46,6 +49,15 @@ export function QueryPage() {
       for (const k of Object.keys(r)) keys.add(k);
     }
     return [...keys].sort();
+  }, [res]);
+
+  const detailKeys = useMemo(() => {
+    if (detailRowIndex === null || !res?.rows[detailRowIndex]) return [];
+    return Object.keys(res.rows[detailRowIndex]).sort();
+  }, [res, detailRowIndex]);
+
+  useEffect(() => {
+    setDetailRowIndex(null);
   }, [res]);
 
   const canWrite = me?.roles.some((r) => r === "admin" || r === "operator" || r === "manager");
@@ -95,20 +107,6 @@ export function QueryPage() {
     }
   }
 
-  async function exportResults(fmt: "csv" | "jsonl") {
-    setErr(null);
-    setExportMsg(null);
-    try {
-      const { job_id } = await api<{ job_id: string }>("/export", {
-        method: "POST",
-        json: { dsl, format: fmt },
-      });
-      setExportMsg(`Export job ${job_id} queued. Open Jobs to download when state is done.`);
-    } catch (ex) {
-      setErr(String(ex));
-    }
-  }
-
   const panelErr =
     err && !addTagOpen && !dslHelpOpen && !tagsModalOpen && !nlModalOpen ? <p className="error">{err}</p> : null;
 
@@ -152,20 +150,10 @@ export function QueryPage() {
             </select>
           </div>
           {panelErr}
-          {exportMsg ? <p className="hint">{exportMsg}</p> : null}
           <div className="btn-row">
             <button type="submit" disabled={loading}>
               {loading ? "Running…" : "Run"}
             </button>
-            <span className="btn-with-tip">
-              <button type="button" className="secondary" disabled={!dsl.trim()} onClick={() => exportResults("csv")}>
-                Export CSV (job)
-              </button>
-              <button type="button" className="secondary" disabled={!dsl.trim()} onClick={() => exportResults("jsonl")}>
-                Export JSONL (job)
-              </button>
-              <DocTip text="Queues a background export of every row matching the DSL (not the 50-row preview). Track the job and download from Jobs when it finishes." />
-            </span>
           </div>
         </form>
       </section>
@@ -174,30 +162,58 @@ export function QueryPage() {
         <section className="panel">
           <div className="panel__head">
             <h2>Results</h2>
+            {res.total > 0 ? (
+              <button type="button" className="secondary" onClick={() => setExportOpen(true)}>
+                Export…
+              </button>
+            ) : null}
           </div>
+          {exportMsg ? <p className="hint">{exportMsg}</p> : null}
           <p className="hint" style={{ marginTop: 0 }}>
             Total matching: {res.total}. Showing {res.rows.length} row(s). View: {res.view}.
           </p>
-          <div style={{ overflowX: "auto" }}>
-            <table>
-              <thead>
-                <tr>
-                  {columns.map((c) => (
-                    <th key={c}>{c}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {res.rows.map((r, i) => (
-                  <tr key={i}>
-                    {columns.map((c) => (
-                      <td key={c}>{fmt(r[c])}</td>
+          {res.rows.length > 0 ? (
+            <>
+              <div className="results-table-wrap">
+                <table className="results-table">
+                  <thead>
+                    <tr>
+                      {columns.map((c) => (
+                        <th key={c}>{c}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {res.rows.map((r, i) => (
+                      <tr
+                        key={i}
+                        className={detailRowIndex === i ? "results-table__row--active" : undefined}
+                        tabIndex={0}
+                        onClick={() => setDetailRowIndex(i)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setDetailRowIndex(i);
+                          }
+                        }}
+                      >
+                        {columns.map((c) => (
+                          <td key={c}>{fmt(r[c])}</td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                  </tbody>
+                </table>
+              </div>
+              <p className="hint" style={{ marginTop: "0.65rem", marginBottom: 0 }}>
+                Click a row for full fields and values.
+              </p>
+            </>
+          ) : (
+            <p className="hint" style={{ marginTop: "0.65rem", marginBottom: 0 }}>
+              No rows in this preview.
+            </p>
+          )}
         </section>
       ) : null}
 
@@ -222,6 +238,35 @@ export function QueryPage() {
           setErr(null);
         }}
       />
+      <ExportModal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        dsl={dsl}
+        onQueued={(jobId) => {
+          setErr(null);
+          setExportMsg(`Export job ${jobId} queued. Open Jobs to download when state is done.`);
+        }}
+      />
+      {res && detailRowIndex !== null && res.rows[detailRowIndex] ? (
+        <Modal
+          open
+          wide
+          title="Row detail"
+          onClose={() => setDetailRowIndex(null)}
+        >
+          <p className="hint" style={{ marginTop: 0 }}>
+            View {detailRowIndex + 1} of {res.rows.length} in this preview (offset {res.offset}, view {res.view}).
+          </p>
+          <dl className="row-detail-dl">
+            {detailKeys.map((k) => (
+              <Fragment key={k}>
+                <dt>{k}</dt>
+                <dd>{fmt(res.rows[detailRowIndex][k])}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </Modal>
+      ) : null}
     </div>
   );
 }

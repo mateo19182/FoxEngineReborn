@@ -1,72 +1,170 @@
-/* react-chat-widget — align with FoxEngine theme */
+.assistant-dock {
+  position: fixed;
+  z-index: 10000;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.65rem;
+  pointer-events: none;
+}
 
-.rcw-launcher {
-  background: var(--accent) !important;
+.assistant-dock > * {
+  pointer-events: auto;
+}
+
+.assistant-dock__launcher {
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 50%;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  cursor: pointer;
   box-shadow: var(--shadow);
 }
 
-.rcw-launcher > img {
-  filter: brightness(0) invert(1);
+.assistant-dock__launcher:hover {
+  filter: brightness(1.08);
 }
 
-.rcw-widget-container {
-  bottom: 84px !important;
-  right: 20px !important;
-  font-family: var(--font) !important;
-  box-shadow: var(--shadow) !important;
-  border: 1px solid var(--border-strong) !important;
-  border-radius: var(--radius) !important;
+.assistant-dock__panel {
+  width: min(24rem, calc(100vw - 2.5rem));
+  max-height: min(52rem, calc(100vh - 3rem));
+  min-height: clamp(18rem, 52vh, 30rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
 
-.rcw-widget-container .rcw-conversation-container {
-  background: var(--bg-elevated) !important;
-  color: var(--text) !important;
+.assistant-dock__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-input);
 }
 
-.rcw-widget-container .rcw-header {
-  background: var(--bg-input) !important;
-  color: var(--text) !important;
-  border-bottom: 1px solid var(--border) !important;
+.assistant-dock__head-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.4rem;
 }
 
-.rcw-widget-container .rcw-header .rcw-title {
-  color: var(--text) !important;
+.assistant-dock__icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.35rem 0.45rem;
 }
 
-.rcw-widget-container .rcw-header .rcw-subtitle {
-  color: var(--text-muted) !important;
+.assistant-dock__title {
+  font-weight: 600;
+  font-size: 0.95rem;
 }
 
-.rcw-widget-container .rcw-message-text {
-  color: var(--text) !important;
+.assistant-dock__subtitle {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
 }
 
-.rcw-widget-container .rcw-client .rcw-message-text {
-  background: var(--accent-soft) !important;
-  border: 1px solid var(--border-strong);
+.assistant-dock__close {
+  flex-shrink: 0;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.8rem;
 }
 
-.rcw-widget-container .rcw-response .rcw-message-text {
-  background: var(--bg-input) !important;
+.assistant-dock__messages {
+  flex: 1 1 auto;
+  min-height: 18rem;
+  min-width: 0;
+  overflow: auto;
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.assistant-dock__empty {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+}
+
+.assistant-dock__msg {
+  font-size: 0.88rem;
+  line-height: 1.45;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
   border: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.rcw-widget-container .rcw-footer {
-  background: var(--bg-elevated) !important;
-  border-top: 1px solid var(--border) !important;
+.assistant-dock__msg--user {
+  align-self: flex-end;
+  max-width: 92%;
+  background: var(--accent-soft);
+  border-color: var(--border-strong);
 }
 
-.rcw-widget-container .rcw-footer .rcw-message-box {
-  background: var(--bg-input) !important;
-  border: 1px solid var(--border-strong) !important;
-  color: var(--text) !important;
+.assistant-dock__streaming {
+  opacity: 0.92;
+  border-style: dashed;
 }
 
-.rcw-widget-container .rcw-send {
-  background: var(--accent) !important;
+.assistant-dock__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem 0.5rem 0.25rem;
 }
 
-.rcw-widget-container .rcw-close-button {
-  background: transparent !important;
+.assistant-dock__spinner {
+  display: block;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: assistant-dock-spin 0.65s linear infinite;
+}
+
+@keyframes assistant-dock-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.assistant-dock__composer {
+  padding: 0.65rem 0.85rem 0.85rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.assistant-dock__composer textarea {
+  resize: none;
+  margin-bottom: 0.45rem;
+}
+
+.assistant-dock__composer-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.assistant-dock__composer-actions button {
+  width: auto;
 }
