@@ -9,6 +9,15 @@ export function setToken(t: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+export function logout() {
+  setToken(null);
+  window.location.href = "/login";
+}
+
+export function onUnauthorized(status: number, sentToken: boolean) {
+  if (status === 401 && sentToken) logout();
+}
+
 export async function api<T>(
   path: string,
   init: RequestInit & { json?: unknown } = {},
@@ -38,6 +47,7 @@ export async function api<T>(
       typeof data === "object" && data && "detail" in data
         ? String((data as { detail: unknown }).detail)
         : text || r.statusText;
+    onUnauthorized(r.status, Boolean(token));
     throw new Error(msg);
   }
   return data as T;

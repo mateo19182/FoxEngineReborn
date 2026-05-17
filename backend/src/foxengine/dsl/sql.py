@@ -7,10 +7,6 @@ from uuid import UUID
 from foxengine.dsl.ast_nodes import And, Expr, Not, Or, Pred
 
 FIELD_TO_COLUMN: dict[str, str | None] = {
-    "phone": "phone_norm",
-    "email": "email_norm",
-    "username": "username",
-    "id_card": "id_card",
     "full_name": "full_name",
     "first_name": "first_name",
     "last_name": "last_name",
@@ -30,6 +26,14 @@ FIELD_TO_COLUMN: dict[str, str | None] = {
     "email.domain": "email_domain",
     "email.local": "email_local",
     "phone.country": None,
+}
+
+IDENTITY_FIELD_TO_KIND = {
+    "identity_key": "identity_key",
+    "phone": "phone",
+    "email": "email",
+    "username": "username",
+    "id_card": "id_card",
 }
 
 
@@ -63,13 +67,30 @@ def _split_value(raw: str) -> tuple[str, str]:
     return "exact", raw
 
 
+def _match_sql(col: str, mode: str, param_name: str) -> str:
+    if mode == "exact":
+        return f"{col} = {{{param_name}:String}}"
+    if mode == "prefix":
+        return f"startsWith({col}, {{{param_name}:String}})"
+    if mode == "suffix":
+        return f"endsWith({col}, {{{param_name}:String}})"
+    return f"position({col}, {{{param_name}:String}}) > 0"
+
+
+def _lead_key_in(table: str, where_sql: str) -> str:
+    return (
+        "(batch_id, row_in_batch) IN "
+        f"(SELECT batch_id, row_in_batch FROM {table} WHERE {where_sql})"
+    )
+
+
 def _pred_sql(
     p: Pred, params: dict[str, Any], tag_uuid_lists: dict[tuple[str, str], list[UUID]]
 ) -> str:
     field = p.field
     mode, core = _split_value(p.value)
 
-    if field in ("tag", "tag.type", "tag.breach_date"):
+    if field in ("tag", "tag.type", "tag.family", "tag.breach_date"):
         key = (field, p.value)
         uuids = tag_uuid_lists.get(key, [])
         if not uuids:
@@ -77,20 +98,33 @@ def _pred_sql(
         if len(uuids) == 1:
             pn = _next_name(params, "tu")
             params[pn] = str(uuids[0])
-            return f"has(tag_ids, toUUID({{{pn}:String}}))"
+            return _lead_key_in("lead_tags", f"tag_id = toUUID({{{pn}:String}})")
         names = []
         for u in uuids:
             pn = _next_name(params, "tu")
             params[pn] = str(u)
             names.append(f"toUUID({{{pn}:String}})")
         inner = ", ".join(names)
-        return f"hasAny(tag_ids, [{inner}])"
+        return _lead_key_in("lead_tags", f"tag_id IN ({inner})")
+
+    identity_kind = IDENTITY_FIELD_TO_KIND.get(field)
+    if identity_kind:
+        pn = _next_name(params, "iv")
+        params[pn] = core.lower() if field == "username" else core
+        value_predicate = _match_sql("identity_value", mode, pn)
+        return _lead_key_in(
+            "lead_identities",
+            f"identity_kind = '{identity_kind}' AND {value_predicate}",
+        )
 
     col = FIELD_TO_COLUMN.get(field)
     if col is None and field == "phone.country":
         pn = _next_name(params, "pc")
         params[pn] = core
-        return f"startsWith(phone_norm, {{{pn}:String}})"
+        return _lead_key_in(
+            "lead_identities",
+            f"identity_kind = 'phone' AND startsWith(identity_value, {{{pn}:String}})",
+        )
 
     if not col:
         raise CompileError(f"unknown field {field!r}")
@@ -108,13 +142,7 @@ def _pred_sql(
     pn = _next_name(params, "v")
     params[pn] = core
 
-    if mode == "exact":
-        return f"{col} = {{{pn}:String}}"
-    if mode == "prefix":
-        return f"startsWith({col}, {{{pn}:String}})"
-    if mode == "suffix":
-        return f"endsWith({col}, {{{pn}:String}})"
-    return f"position({col}, {{{pn}:String}}) > 0"
+    return _match_sql(col, mode, pn)
 
 
 def compile_expr(

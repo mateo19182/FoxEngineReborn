@@ -65,8 +65,12 @@ export function DslHelpModal({ open, onClose }: DslHelpModalProps) {
 
         <h3>Lead fields</h3>
         <p className="hint">
-          phone, email, username, id_card, full_name, first_name, last_name, dob, gender, address, city, country, zip,
-          ip, user_agent, isp, phone_carrier, password, password_hash, last_seen
+          identity_key, phone, email, username, id_card, full_name, first_name, last_name, dob, gender, address, city,
+          country, zip, ip, user_agent, isp, phone_carrier, password, password_hash, last_seen
+        </p>
+        <p className="hint" style={{ marginTop: "0.35rem" }}>
+          <code className="mono">identity_key</code> is the stored priority key from ingest (email, then phone, then
+          username, then id_card). The Related view links rows using all four identity fields.
         </p>
 
         <h3>Tags</h3>
@@ -89,6 +93,12 @@ export function DslHelpModal({ open, onClose }: DslHelpModalProps) {
               <td>By tag type</td>
               <td className="mono">
                 <code>tag.type:LEAK</code>
+              </td>
+            </tr>
+            <tr>
+              <td>By tag family</td>
+              <td className="mono">
+                <code>tag.family:DATA_LEAK</code>
               </td>
             </tr>
             <tr>

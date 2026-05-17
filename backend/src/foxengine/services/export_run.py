@@ -18,7 +18,7 @@ from foxengine.clickhouse import get_ch_client
 from foxengine.config import get_settings
 from foxengine.db.models import Job
 from foxengine.db.session import get_session_factory
-from foxengine.services.job_queries import compile_leads_where
+from foxengine.services.job_queries import compile_leads_where, leads_select_sql
 
 log = logging.getLogger(__name__)
 
@@ -69,8 +69,6 @@ async def run_export_job(job_id: UUID) -> None:
     if isinstance(rl_raw, int) and rl_raw > 0:
         row_cap = min(row_cap, rl_raw)
 
-    base = f"SELECT * FROM leads WHERE {where_sql} ORDER BY ingest_ts DESC"
-
     ch = await get_ch_client()
     total_written = 0
     columns: list[str] | None = None
@@ -85,7 +83,7 @@ async def run_export_job(job_id: UUID) -> None:
 
     while total_written < row_cap:
         lim = min(batch_size, row_cap - total_written)
-        data_sql = f"{base} LIMIT {lim} OFFSET {offset}"
+        data_sql = leads_select_sql(where_sql, limit=lim, offset=offset)
         qr = await ch.query(data_sql, parameters=params, settings=CH_SETTINGS)
         rows = list(qr.named_results())
         if not rows:

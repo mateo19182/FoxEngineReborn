@@ -1,6 +1,8 @@
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from foxengine.tag_taxonomy import assert_known_tag_type, family_for_type
 
 StorageStore = Literal["uploads", "exports"]
 
@@ -27,6 +29,18 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ColumnMapSuggestRequest(BaseModel):
+    format: Literal["csv"] = "csv"
+    inner_name: str | None = None
+    headers: list[str] = Field(min_length=1, max_length=200)
+    sample_rows: list[dict[str, str]] = Field(default_factory=list, max_length=20)
+
+
+class ColumnMapSuggestResponse(BaseModel):
+    column_map: dict[str, str]
+    canonical_fields: list[str]
 
 
 class MeResponse(BaseModel):
@@ -108,6 +122,18 @@ class TagCreate(BaseModel):
     type: str | None = None
     notes: str | None = None
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_tag_type(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise TypeError("tag type must be a string or null")
+        try:
+            return assert_known_tag_type(v)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
+
 
 class TagPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=512)
@@ -116,6 +142,33 @@ class TagPatch(BaseModel):
     type: str | None = None
     notes: str | None = None
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_tag_type(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise TypeError("tag type must be a string or null")
+        try:
+            return assert_known_tag_type(v)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
+
+
+class TagTaxonomyTypeItem(BaseModel):
+    code: str
+    family: str
+
+
+class TagTaxonomyFamilyItem(BaseModel):
+    code: str
+    types: list[str]
+
+
+class TagTaxonomyOut(BaseModel):
+    types: list[TagTaxonomyTypeItem]
+    families: list[TagTaxonomyFamilyItem]
+
 
 class TagOut(BaseModel):
     id: str
@@ -123,8 +176,24 @@ class TagOut(BaseModel):
     source_url: str | None
     breach_date: str | None
     type: str | None
+    family: str | None
     notes: str | None
     created_at: str
+
+    @classmethod
+    def from_tag(cls, t: object) -> Self:
+        """Build TagOut from a Tag ORM row (avoids circular imports on Tag model)."""
+        breach = getattr(t, "breach_date", None)
+        return cls(
+            id=str(getattr(t, "id")),
+            name=str(getattr(t, "name")),
+            source_url=getattr(t, "source_url", None),
+            breach_date=breach.isoformat() if breach else None,
+            type=getattr(t, "type", None),
+            family=family_for_type(getattr(t, "type", None)),
+            notes=getattr(t, "notes", None),
+            created_at=getattr(t, "created_at").isoformat(),
+        )
 
 
 class IndexRequest(BaseModel):
@@ -137,7 +206,7 @@ class QueryRequest(BaseModel):
     dsl: str
     limit: int = Field(default=50, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
-    view: Literal["rows", "merged"] = "rows"
+    view: Literal["rows", "related"] = "rows"
 
 
 class QueryNlRequest(BaseModel):
@@ -168,6 +237,15 @@ class ExportRequest(BaseModel):
     dsl: str
     format: Literal["csv", "jsonl"] = "csv"
     row_limit: int | None = Field(default=None, ge=1)
+
+
+class IngestQueuedUploadRequest(BaseModel):
+    upload_id: str = Field(min_length=1)
+    selected_files: list[str] = Field(default_factory=list)
+    tag_names: str = ""
+    batch_name: str | None = None
+    column_map_by_file_json: str | None = None
+    merge_archive: bool = False
 
 
 class JobOut(BaseModel):

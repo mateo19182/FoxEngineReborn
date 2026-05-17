@@ -1,9 +1,14 @@
-import { useState } from "react";
-import { api, getToken } from "./api";
+import { useEffect, useState } from "react";
+import { api, getToken, onUnauthorized } from "./api";
 import { DocTip } from "./DocTip";
 import { Modal } from "./Modal";
 
 type AddMode = "manual" | "bulk";
+
+type TagTaxonomy = {
+  types: { code: string; family: string }[];
+  families: { code: string; types: string[] }[];
+};
 
 type TagAddModalProps = {
   open: boolean;
@@ -14,6 +19,8 @@ type TagAddModalProps = {
 export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
   const [addMode, setAddMode] = useState<AddMode>("manual");
   const [name, setName] = useState("");
+  const [tagType, setTagType] = useState("");
+  const [taxonomy, setTaxonomy] = useState<TagTaxonomy | null>(null);
   const [bulkTags, setBulkTags] = useState("");
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
@@ -22,6 +29,7 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
   function reset() {
     setAddMode("manual");
     setName("");
+    setTagType("");
     setBulkTags("");
     setBulkFile(null);
     setBulkMsg(null);
@@ -33,11 +41,21 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
     onClose();
   }
 
+  useEffect(() => {
+    if (!open) return;
+    void api<TagTaxonomy>("/tags/taxonomy")
+      .then(setTaxonomy)
+      .catch(() => setTaxonomy(null));
+  }, [open]);
+
   async function createManual(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
     try {
-      await api("/tags", { method: "POST", json: { name } });
+      await api("/tags", {
+        method: "POST",
+        json: { name, ...(tagType ? { type: tagType } : {}) },
+      });
       await onCreated();
       handleClose();
     } catch (ex) {
@@ -76,6 +94,7 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
         } catch {
           /* ignore */
         }
+        onUnauthorized(r.status, true);
         throw new Error(detail);
       }
       const data = JSON.parse(text) as { job_id: string };
@@ -120,6 +139,18 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
           <div className="field">
             <label htmlFor="tag-name">Name</label>
             <input id="tag-name" value={name} onChange={(e) => setName(e.target.value)} required />
+          </div>
+          <div className="field">
+            <label htmlFor="tag-type">Type</label>
+            <select id="tag-type" value={tagType} onChange={(e) => setTagType(e.target.value)}>
+              <option value="">None</option>
+              {taxonomy?.types.map((row) => (
+                <option key={row.code} value={row.code}>
+                  {row.code} ({row.family})
+                </option>
+              ))}
+            </select>
+            {!taxonomy ? <p className="hint" style={{ marginTop: "0.35rem" }}>Taxonomy unavailable.</p> : null}
           </div>
           <div className="btn-row">
             <button type="submit">Create</button>

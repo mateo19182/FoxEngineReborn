@@ -23,12 +23,9 @@ from foxengine.services.identity import (
     normalize_phone,
 )
 from foxengine.services.ingest import resolve_tag_ids
+from foxengine.services.ingest_rows import CH_TAG_INSERT_COLUMNS
 
 log = logging.getLogger(__name__)
-
-
-def _ch_escape_str(s: str) -> str:
-    return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
 async def run_bulk_tag_job(job_id: UUID) -> None:
@@ -114,30 +111,33 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
     unique_keys = list(dict.fromkeys(keys_from_csv))
     ch = await get_ch_client()
     existing: set[str] = set()
-    chunk_size = 300
+    matched_rows: set[tuple[str, int]] = set()
+    chunk_size = 10_000
     for i in range(0, len(unique_keys), chunk_size):
         chunk = unique_keys[i : i + chunk_size]
-        inlist = ", ".join(f"'{_ch_escape_str(k)}'" for k in chunk)
-        q = f"SELECT DISTINCT identity_key FROM leads WHERE identity_key IN ({inlist})"
-        qr = await ch.query(q)
+        q = (
+            "SELECT identity_value, batch_id, row_in_batch "
+            "FROM lead_identities "
+            "WHERE identity_kind = 'identity_key' "
+            "AND has({keys:Array(String)}, identity_value)"
+        )
+        qr = await ch.query(q, parameters={"keys": chunk})
         for row in qr.result_rows:
             existing.add(str(row[0]))
+            matched_rows.add((str(row[1]), int(row[2])))
 
-    tag_uuid_sql = ", ".join(f"toUUID('{tid}')" for tid in (str(u) for u in tag_ids))
-    concat_sql = f"arrayDistinct(arrayConcat(tag_ids, [{tag_uuid_sql}]))"
-
-    matched = 0
-    for i in range(0, len(unique_keys), chunk_size):
-        chunk = [k for k in unique_keys[i : i + chunk_size] if k in existing]
-        if not chunk:
-            continue
-        inlist = ", ".join(f"'{_ch_escape_str(k)}'" for k in chunk)
-        sql = (
-            f"ALTER TABLE leads UPDATE tag_ids = {concat_sql} "
-            f"WHERE identity_key IN ({inlist}) SETTINGS mutations_sync = 0"
+    assigned_at = datetime.now(UTC).replace(tzinfo=None)
+    tag_rows = [
+        [str(tag_id), batch_id, row_in_batch, assigned_at, f"bulk_tag:{job_id}"]
+        for batch_id, row_in_batch in matched_rows
+        for tag_id in tag_ids
+    ]
+    if tag_rows:
+        await ch.insert(
+            "lead_tags",
+            tag_rows,
+            column_names=CH_TAG_INSERT_COLUMNS,
         )
-        await ch.command(sql)
-        matched += len(chunk)
 
     unmatched_keys = [k for k in unique_keys if k not in existing]
     unmatched_body = ("identity_key\n" + "\n".join(unmatched_keys) + "\n").encode("utf-8")
@@ -163,7 +163,7 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
                 result_uri=f"s3://{s.s3_bucket_exports}/{ukey}",
                 checkpoint={
                     **ck,
-                    "matched_rows": matched,
+                    "matched_rows": len(matched_rows),
                     "unmatched_rows": len(unmatched_keys),
                     "unmatched_key": ukey,
                 },

@@ -12,30 +12,29 @@ from typing import Any, Literal
 FormatName = Literal["jsonl", "csv", "combo"]
 
 # Canonical ingest field names (subset we map from headers)
-CANONICAL = frozenset(
-    {
-        "phone",
-        "email",
-        "username",
-        "id_card",
-        "full_name",
-        "first_name",
-        "last_name",
-        "dob",
-        "gender",
-        "address",
-        "city",
-        "country",
-        "zip",
-        "ip",
-        "user_agent",
-        "isp",
-        "phone_carrier",
-        "password",
-        "password_hash",
-        "last_seen",
-    }
+CANONICAL_FIELDS = (
+    "phone",
+    "email",
+    "username",
+    "id_card",
+    "full_name",
+    "first_name",
+    "last_name",
+    "dob",
+    "gender",
+    "address",
+    "city",
+    "country",
+    "zip",
+    "ip",
+    "user_agent",
+    "isp",
+    "phone_carrier",
+    "password",
+    "password_hash",
+    "last_seen",
 )
+CANONICAL = frozenset(CANONICAL_FIELDS)
 
 _HEADER_ALIASES: dict[str, tuple[str, float]] = {
     "email": ("email", 1.0),
@@ -85,14 +84,117 @@ _HEADER_ALIASES: dict[str, tuple[str, float]] = {
     "last_seen": ("last_seen", 1.0),
 }
 
+_HEADER_PATTERNS: dict[str, tuple[tuple[str, float], ...]] = {
+    "email": (
+        (r"\be\s?mail\b", 0.92),
+        (r"\bmail\b", 0.7),
+    ),
+    "phone": (
+        (r"\bphone\b", 0.9),
+        (r"\btelephone\b", 0.9),
+        (r"\bmobile\b", 0.86),
+        (r"\bcell(?:ular)?\b", 0.78),
+        (r"\btelefono\b", 0.86),
+        (r"\bcellulare\b", 0.86),
+        (r"\bmsisdn\b", 0.9),
+        (r"\btel\b", 0.76),
+    ),
+    "username": (
+        (r"\buser\s?name\b", 0.95),
+        (r"\blogin\b", 0.76),
+        (r"\bnick(?:name)?\b", 0.68),
+        (r"\bhandle\b", 0.72),
+    ),
+    "id_card": (
+        (r"\bnational\s?id\b", 0.86),
+        (r"\bid\s?card\b", 0.92),
+    ),
+    "full_name": (
+        (r"\bfull\s?name\b", 0.96),
+        (r"^name$", 0.7),
+        (r"\bdisplay\s?name\b", 0.82),
+    ),
+    "first_name": (
+        (r"\bfirst\s?name\b", 0.96),
+        (r"\bgiven\s?name\b", 0.9),
+        (r"^nome$", 0.82),
+        (r"^nombre$", 0.78),
+        (r"\bforename\b", 0.82),
+    ),
+    "last_name": (
+        (r"\blast\s?name\b", 0.96),
+        (r"\bsur\s?name\b", 0.9),
+        (r"\bfamily\s?name\b", 0.9),
+        (r"\bcognome\b", 0.9),
+        (r"\bapellido\b", 0.82),
+    ),
+    "dob": (
+        (r"\bdate\s?of\s?birth\b", 0.95),
+        (r"\bbirth\s?date\b", 0.88),
+        (r"\bdob\b", 1.0),
+    ),
+    "address": (
+        (r"\baddress\b", 0.92),
+        (r"\bstreet\b", 0.76),
+        (r"\bindirizzo\b", 0.88),
+        (r"\bdireccion\b", 0.78),
+        (r"\badresse\b", 0.78),
+    ),
+    "city": (
+        (r"\bcity\b", 0.94),
+        (r"\btown\b", 0.82),
+        (r"\bcitt[àa]\b", 0.86),
+        (r"\blocality\b", 0.78),
+        (r"\bciudad\b", 0.82),
+    ),
+    "country": (
+        (r"\bcountry\b", 0.94),
+        (r"\bnation(?:ality)?\b", 0.82),
+        (r"\bpaese\b", 0.78),
+        (r"\bpais\b", 0.78),
+    ),
+    "zip": (
+        (r"\bzip\b", 0.94),
+        (r"\bpostal\s?code\b", 0.9),
+        (r"\bpost\s?code\b", 0.86),
+        (r"\bcap\b", 0.82),
+    ),
+    "ip": (
+        (r"\bip\s?address\b", 0.96),
+        (r"^ip$", 1.0),
+    ),
+    "user_agent": ((r"\buser\s?agent\b", 0.96),),
+    "isp": ((r"\bisp\b", 1.0),),
+    "phone_carrier": ((r"\bcarrier\b", 0.8),),
+    "password": (
+        (r"\bpassword\b", 1.0),
+        (r"\bpasswd\b", 0.86),
+        (r"^pass$", 0.76),
+    ),
+    "password_hash": (
+        (r"\bpassword\s?hash\b", 1.0),
+        (r"^hash$", 0.66),
+    ),
+    "last_seen": (
+        (r"\blast\s?seen\b", 0.94),
+        (r"\blast\s?login\b", 0.82),
+    ),
+}
+
 
 def _norm_header(h: str) -> str:
-    return h.strip().lower().replace(" ", "_").replace("-", "_")
+    return re.sub(r"[\s-]+", "_", h.strip().lower())
+
+
+def _norm_header_words(h: str) -> str:
+    normalized = re.sub(r"[^a-z0-9à]", " ", h.strip().lower())
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def score_header(header: str) -> list[tuple[str, float]]:
     """Return up to 5 (canonical_field, confidence) guesses for a CSV header."""
     nh = _norm_header(header)
+    nw = _norm_header_words(header)
     out: list[tuple[str, float]] = []
     if nh in CANONICAL:
         out.append((nh, 1.0))
@@ -106,6 +208,10 @@ def score_header(header: str) -> list[tuple[str, float]]:
         out.append(("email", 0.72))
     if "phone" in nh and nh not in ("phone", "microphone"):
         out.append(("phone", 0.72))
+    for field, patterns in _HEADER_PATTERNS.items():
+        for pattern, conf in patterns:
+            if re.search(pattern, nw, re.IGNORECASE):
+                out.append((field, conf))
     best: dict[str, float] = {}
     for field, c in out:
         if c > best.get(field, 0.0):

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import "./assistantChat.css";
-import { getToken } from "./api";
+import { getToken, onUnauthorized } from "./api";
 
 type Turn = { role: "user" | "assistant"; content: string };
 
@@ -103,6 +103,7 @@ export function AssistantChatWidget() {
       });
       if (!res.ok) {
         const t = await res.text();
+        onUnauthorized(res.status, Boolean(token));
         throw new Error(t || res.statusText);
       }
       const reader = res.body?.getReader();

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from foxengine.db.models import Tag
 from foxengine.dsl.parser import parse_dsl
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, chat_completion
+from foxengine.tag_taxonomy import family_for_type
 
 CANONICAL_FIELDS = (
     "phone",
@@ -34,7 +35,7 @@ CANONICAL_FIELDS = (
     "last_seen",
 )
 
-TAG_FIELDS = ("tag", "tag.type", "tag.breach_date")
+TAG_FIELDS = ("tag", "tag.type", "tag.family", "tag.breach_date")
 
 _SYSTEM_TEMPLATE = """You translate natural-language search requests into FoxEngine DSL.
 
@@ -44,7 +45,8 @@ Grammar:
 - Predicates: field:value (lowercase field; components use dots, e.g. email.domain:outlook.com)
 - Wildcards in values: * (e.g. email:*@example.com, username:john*)
 - Boolean: AND OR NOT with parentheses for grouping
-- Tag filters: tag:Name, tag.type:LOGIN, tag.breach_date:YYYY or YYYY-MM-DD (no wildcards on tags)
+- Tag filters: tag:Name, tag.type:LOGIN, tag.family:DATA_LEAK,
+  tag.breach_date:YYYY or YYYY-MM-DD (no wildcards on tags)
 
 Lead fields (use only these): {fields}
 
@@ -77,6 +79,9 @@ async def _tag_lines(session: AsyncSession) -> str:
         bits = [str(name)]
         if typ:
             bits.append(f"type={typ}")
+            fam = family_for_type(typ)
+            if fam:
+                bits.append(f"family={fam}")
         if breach:
             bits.append(f"breach_date={breach}")
         lines.append("- " + ", ".join(bits))
@@ -126,9 +131,6 @@ def _sanitize_attempted(dsl: str) -> str:
 
 
 async def translate_nl_to_dsl(session: AsyncSession, nl: str) -> dict[str, str | bool | None]:
-    import logging
-    logger = logging.getLogger(__name__)
-
     tag_block = await _tag_lines(session)
     system = build_system_prompt(tag_block)
     try:

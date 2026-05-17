@@ -35,41 +35,27 @@ async def compile_leads_where(
     return f"({cw.sql}){extra}", params
 
 
-def merged_profile_select(merged_sources_cap: int) -> str:
-    """Aggregate expression list (inside SELECT ... FROM leads WHERE ... GROUP BY identity_key)."""
+def leads_select_sql(where_sql: str, *, limit: int, offset: int = 0) -> str:
     return f"""
-  identity_key,
-  argMax(phone_norm, ingest_ts) AS phone_norm,
-  argMax(phone_raw, ingest_ts) AS phone_raw,
-  argMax(email_norm, ingest_ts) AS email_norm,
-  argMax(email_raw, ingest_ts) AS email_raw,
-  argMax(username, ingest_ts) AS username,
-  argMax(id_card, ingest_ts) AS id_card,
-  argMax(full_name, ingest_ts) AS full_name,
-  argMax(first_name, ingest_ts) AS first_name,
-  argMax(last_name, ingest_ts) AS last_name,
-  argMax(dob, ingest_ts) AS dob,
-  argMax(gender, ingest_ts) AS gender,
-  argMax(address, ingest_ts) AS address,
-  argMax(city, ingest_ts) AS city,
-  argMax(country, ingest_ts) AS country,
-  argMax(zip, ingest_ts) AS zip,
-  argMax(ip, ingest_ts) AS ip,
-  argMax(user_agent, ingest_ts) AS user_agent,
-  argMax(isp, ingest_ts) AS isp,
-  argMax(phone_carrier, ingest_ts) AS phone_carrier,
-  argMax(password, ingest_ts) AS password,
-  argMax(password_hash, ingest_ts) AS password_hash,
-  argMax(last_seen, ingest_ts) AS last_seen,
-  argMax(extras, ingest_ts) AS extras,
-  arrayDistinct(arrayFlatten(groupArray(tag_ids))) AS tag_ids,
-  max(ingest_ts) AS ingest_ts,
-  argMax(batch_id, ingest_ts) AS batch_id,
-  argMax(row_in_batch, ingest_ts) AS row_in_batch,
-  count() AS _merged_row_count,
-  arraySlice(
-    groupArray(tuple(toString(batch_id), toString(row_in_batch), toString(ingest_ts))),
-    1,
-    {int(merged_sources_cap)}
-  ) AS _merged_sources
-""".strip()
+WITH selected AS (
+    SELECT *
+    FROM leads
+    WHERE {where_sql}
+    ORDER BY ingest_ts DESC
+    LIMIT {int(limit)} OFFSET {int(offset)}
+)
+SELECT
+    l.*,
+    ifNull(t.tag_ids, CAST([], 'Array(UUID)')) AS tag_ids
+FROM selected AS l
+LEFT ANY JOIN (
+    SELECT
+        batch_id,
+        row_in_batch,
+        groupUniqArray(tag_id) AS tag_ids
+    FROM lead_tags
+    WHERE (batch_id, row_in_batch) IN (SELECT batch_id, row_in_batch FROM selected)
+    GROUP BY batch_id, row_in_batch
+) AS t USING (batch_id, row_in_batch)
+ORDER BY l.ingest_ts DESC
+"""

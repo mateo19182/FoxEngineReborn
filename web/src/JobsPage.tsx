@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, getToken } from "./api";
+import { api, getToken, onUnauthorized } from "./api";
 import { DocTip } from "./DocTip";
 
 type Job = {
@@ -28,7 +28,11 @@ async function downloadRejections(batchId: string) {
   const r = await fetch(`/api/batches/${batchId}/rejections.csv`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!r.ok) throw new Error(await r.text());
+  if (!r.ok) {
+    const text = await r.text();
+    onUnauthorized(r.status, true);
+    throw new Error(text);
+  }
   const blob = await r.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -46,6 +50,7 @@ async function downloadJob(id: string, filename: string) {
   });
   if (!r.ok) {
     const t = await r.text();
+    onUnauthorized(r.status, true);
     throw new Error(t || r.statusText);
   }
   const blob = await r.blob();

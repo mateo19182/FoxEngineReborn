@@ -20,14 +20,17 @@ type Tag = {
   id: string;
   name: string;
   type: string | null;
+  family: string | null;
   breach_date: string | null;
 };
 
 type Me = { roles: string[]; llm_nl_enabled?: boolean };
 
+type QueryView = "rows" | "related";
+
 export function QueryPage() {
   const [dsl, setDsl] = useState("email:*@example.com");
-  const [view, setView] = useState<"rows" | "merged">("rows");
+  const [view, setView] = useState<QueryView>("rows");
   const [res, setRes] = useState<QueryResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -48,12 +51,12 @@ export function QueryPage() {
     for (const r of res.rows) {
       for (const k of Object.keys(r)) keys.add(k);
     }
-    return [...keys].sort();
+    return Array.from(keys).toSorted();
   }, [res]);
 
   const detailKeys = useMemo(() => {
     if (detailRowIndex === null || !res?.rows[detailRowIndex]) return [];
-    return Object.keys(res.rows[detailRowIndex]).sort();
+    return Object.keys(res.rows[detailRowIndex]).toSorted();
   }, [res, detailRowIndex]);
 
   useEffect(() => {
@@ -142,19 +145,44 @@ export function QueryPage() {
             </div>
             <textarea id="q-dsl" rows={4} value={dsl} onChange={(e) => setDsl(e.target.value)} required />
           </div>
-          <div className="field">
-            <label htmlFor="q-view">View</label>
-            <select id="q-view" value={view} onChange={(e) => setView(e.target.value as "rows" | "merged")}>
-              <option value="rows">Per-row (raw leads)</option>
-              <option value="merged">Merged profile (by identity_key)</option>
-            </select>
-          </div>
           {panelErr}
-          <div className="btn-row">
+          <div className="btn-row query-actions">
             <button type="submit" disabled={loading}>
               {loading ? "Running…" : "Run"}
             </button>
+            <div className="query-actions__view">
+              <span className="query-actions__view-label" id="q-view-label">
+                View
+              </span>
+              <div
+                className="query-view-switch query-view-switch--toolbar"
+                role="group"
+                aria-labelledby="q-view-label"
+              >
+                <button
+                  type="button"
+                  className={view === "rows" ? "query-view-switch__active" : undefined}
+                  aria-pressed={view === "rows"}
+                  title="One table row per stored lead"
+                  onClick={() => setView("rows")}
+                >
+                  Rows
+                </button>
+                <button
+                  type="button"
+                  className={view === "related" ? "query-view-switch__active" : undefined}
+                  aria-pressed={view === "related"}
+                  title="DSL matches plus rows sharing email, phone, username, or id card"
+                  onClick={() => setView("related")}
+                >
+                  Related
+                </button>
+              </div>
+            </div>
           </div>
+          <p className="hint query-actions__hint">
+            Related keeps raw rows and groups DSL matches with rows sharing email, phone, username, or id card.
+          </p>
         </form>
       </section>
 
@@ -170,7 +198,10 @@ export function QueryPage() {
           </div>
           {exportMsg ? <p className="hint">{exportMsg}</p> : null}
           <p className="hint" style={{ marginTop: 0 }}>
-            Total matching: {res.total}. Showing {res.rows.length} row(s). View: {res.view}.
+            {res.view === "related"
+              ? `Total DSL matches: ${res.total}. Showing ${res.rows.length} linked row(s).`
+              : `Total matching: ${res.total}. Showing ${res.rows.length} row(s).`}{" "}
+            View: {res.view}.
           </p>
           {res.rows.length > 0 ? (
             <>
@@ -186,8 +217,8 @@ export function QueryPage() {
                   <tbody>
                     {res.rows.map((r, i) => (
                       <tr
-                        key={i}
-                        className={detailRowIndex === i ? "results-table__row--active" : undefined}
+                        key={rowKey(r)}
+                        className={rowClassName(r, detailRowIndex === i)}
                         tabIndex={0}
                         onClick={() => setDetailRowIndex(i)}
                         onKeyDown={(e) => {
@@ -275,4 +306,15 @@ function fmt(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+function rowClassName(row: Record<string, unknown>, active: boolean): string | undefined {
+  const classes = [];
+  if (active) classes.push("results-table__row--active");
+  if (row._related_is_match === false) classes.push("results-table__row--related-only");
+  return classes.length ? classes.join(" ") : undefined;
+}
+
+function rowKey(row: Record<string, unknown>): string {
+  return `${String(row.batch_id)}:${String(row.row_in_batch)}`;
 }

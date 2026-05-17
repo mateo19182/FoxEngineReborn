@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
-import { api, getToken, setToken } from "./api";
+import {
+  BrowserRouter,
+  Link,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
+import { api, getToken, logout } from "./api";
 import { AdminPage } from "./AdminPage";
 import { AccountPage } from "./AccountPage";
 import { IngestPage } from "./IngestPage";
@@ -10,11 +19,14 @@ import { QueryPage } from "./QueryPage";
 import { SetupPage } from "./SetupPage";
 import { StoragePage } from "./StoragePage";
 import { AssistantChatWidget } from "./AssistantChatWidget";
+import { InformaticEyeMark } from "./InformaticEyeMark";
 import { canIngest } from "./roles";
 
 function Shell({ children }: { children: React.ReactNode }) {
   const [roles, setRoles] = useState<string[]>([]);
   const [llmOn, setLlmOn] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const location = useLocation();
 
   useEffect(() => {
     api<{ roles: string[]; llm_nl_enabled?: boolean }>("/auth/me")
@@ -28,74 +40,111 @@ function Shell({ children }: { children: React.ReactNode }) {
       });
   }, []);
 
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 769px)");
+    const onChange = () => {
+      if (mq.matches) {
+        setSidebarOpen(false);
+      }
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen) {
+      return;
+    }
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [sidebarOpen]);
+
   const operator = canIngest(roles);
 
+  const linkClass = ({ isActive }: { isActive: boolean }) =>
+    `sidebar-nav__link${isActive ? " sidebar-nav__link--active" : ""}`;
+
   return (
-    <>
-      <header className="site-header">
-        <div className="layout site-header__row">
-          <Link className="brand" to="/query">
-            FoxEngine
+    <div className="app-shell">
+      <button
+        type="button"
+        className={`app-shell__menu-btn${sidebarOpen ? " app-shell__menu-btn--open" : ""}`}
+        aria-expanded={sidebarOpen}
+        aria-controls="app-sidebar"
+        aria-label={sidebarOpen ? "Close menu" : "Open menu"}
+        onClick={() => setSidebarOpen((o) => !o)}
+      >
+        <span className="app-shell__menu-btn-bar" />
+        <span className="app-shell__menu-btn-bar" />
+        <span className="app-shell__menu-btn-bar" />
+      </button>
+      {sidebarOpen ? (
+        <button
+          type="button"
+          className="app-shell__scrim"
+          aria-label="Close menu"
+          onClick={() => setSidebarOpen(false)}
+        />
+      ) : null}
+      <aside
+        id="app-sidebar"
+        className={`app-sidebar${sidebarOpen ? " app-sidebar--open" : ""}`}
+      >
+        <div className="app-sidebar__glow" aria-hidden />
+        <div className="app-sidebar__top">
+          <Link className="sidebar-brand" to="/query" onClick={() => setSidebarOpen(false)}>
+            <span className="sidebar-brand__mark" aria-hidden>
+              <InformaticEyeMark />
+            </span>
+            <span className="sidebar-brand__word">FoxEngine</span>
           </Link>
-          <NavLink
-            to="/query"
-            className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
-          >
+        </div>
+        <nav className="sidebar-nav" aria-label="Primary">
+          <NavLink to="/query" className={linkClass} end>
             Query
           </NavLink>
           {operator ? (
-            <NavLink
-              to="/ingest"
-              className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
-            >
+            <NavLink to="/ingest" className={linkClass}>
               Ingest
             </NavLink>
           ) : null}
           {operator ? (
-            <NavLink
-              to="/storage"
-              className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
-            >
+            <NavLink to="/storage" className={linkClass}>
               Storage
             </NavLink>
           ) : null}
-          <NavLink
-            to="/jobs"
-            className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
-          >
+          <NavLink to="/jobs" className={linkClass}>
             Jobs
           </NavLink>
           {roles.includes("admin") ? (
-            <NavLink
-              to="/admin"
-              className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
-            >
+            <NavLink to="/admin" className={linkClass}>
               Admin
             </NavLink>
           ) : (
-            <NavLink
-              to="/account"
-              className={({ isActive }) => `nav-link${isActive ? " nav-link--active" : ""}`}
-            >
+            <NavLink to="/account" className={linkClass}>
               Account
             </NavLink>
           )}
-          <span className="nav-gap" />
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              setToken(null);
-              window.location.href = "/login";
-            }}
-          >
+        </nav>
+        <div className="app-sidebar__spacer" />
+        <div className="app-sidebar__foot">
+          <button type="button" className="sidebar-logout" onClick={logout}>
             Log out
           </button>
         </div>
-      </header>
-      <main className="layout main-area">{children}</main>
+      </aside>
+      <div className="app-shell__main">
+        <main className="layout main-area">{children}</main>
+      </div>
       {llmOn ? <AssistantChatWidget /> : null}
-    </>
+    </div>
   );
 }
 

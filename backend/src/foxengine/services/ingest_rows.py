@@ -43,7 +43,22 @@ CH_INSERT_COLUMNS = [
     "password_hash",
     "last_seen",
     "extras",
-    "tag_ids",
+]
+
+CH_IDENTITY_INSERT_COLUMNS = [
+    "identity_kind",
+    "identity_value",
+    "batch_id",
+    "row_in_batch",
+    "ingest_ts",
+]
+
+CH_TAG_INSERT_COLUMNS = [
+    "tag_id",
+    "batch_id",
+    "row_in_batch",
+    "assigned_at",
+    "source",
 ]
 
 
@@ -105,7 +120,6 @@ def materialize_lead_row(
     batch_id: UUID,
     row_in_batch: int,
     ingest_ts: datetime,
-    tag_id_strs: list[str],
     seen_hashes: set[str],
     default_phone_region: str | None = None,
 ) -> tuple[RowOutcome, list[Any] | None, str | None, str | None]:
@@ -185,21 +199,58 @@ def materialize_lead_row(
         built["password_hash"],
         built["last_seen"] or None,
         built["extras"],
-        tag_id_strs,
     ]
     return RowOutcome.accepted, ch_row, None, None
+
+
+def materialize_identity_rows(lead_row: list[Any]) -> list[list[Any]]:
+    batch_id = lead_row[0]
+    row_in_batch = lead_row[1]
+    ingest_ts = lead_row[2]
+    identity_key_value = str(lead_row[3])
+    phone_norm = str(lead_row[4])
+    email_norm = str(lead_row[6])
+    username = str(lead_row[8]).strip().lower()
+    id_card = str(lead_row[9]).strip()
+
+    identities = [
+        ("identity_key", identity_key_value),
+        ("phone", phone_norm),
+        ("email", email_norm),
+        ("username", username),
+        ("id_card", id_card),
+    ]
+    return [
+        [kind, value, batch_id, row_in_batch, ingest_ts]
+        for kind, value in identities
+        if value
+    ]
+
+
+def materialize_tag_rows(
+    tag_id_strs: list[str],
+    lead_row: list[Any],
+    *,
+    assigned_at: datetime,
+    source: str,
+) -> list[list[Any]]:
+    batch_id = lead_row[0]
+    row_in_batch = lead_row[1]
+    return [[tag_id, batch_id, row_in_batch, assigned_at, source] for tag_id in tag_id_strs]
 
 
 def csv_row_to_raw(
     header: list[str],
     cells: list[str],
     column_map: dict[str, str],
+    *,
+    allow_known_field_fallback: bool = True,
 ) -> dict[str, Any]:
     """Map a CSV data line to the ingest `raw` dict using header names.
 
     `column_map` maps CSV header label -> canonical field name (e.g. ``email``).
-    Headers not present in ``column_map`` are dropped unless the header (lowered)
-    matches a known field name.
+    Headers not present in ``column_map`` become extras unless fallback is enabled
+    and the header (lowered) matches a known field name.
     """
     raw: dict[str, Any] = {}
     extras: dict[str, str] = {}
@@ -209,7 +260,7 @@ def csv_row_to_raw(
         key = column_map.get(h) or column_map.get(hs)
         if key is None:
             hl = hs.lower()
-            if hl in KNOWN_RAW_FIELDS:
+            if allow_known_field_fallback and hl in KNOWN_RAW_FIELDS:
                 key = hl
             else:
                 extras[hs] = val

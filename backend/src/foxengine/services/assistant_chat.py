@@ -84,7 +84,7 @@ def _job_out(row: Job, batch: Batch | None = None) -> schemas.JobOut:
 
 
 async def _tool_list_jobs(session: AsyncSession, principal: Principal) -> dict[str, Any]:
-    q = select(Job).order_by(Job.updated_at.desc()).limit(100)
+    q = select(Job).where(Job.type != "ingest_upload").order_by(Job.updated_at.desc()).limit(100)
     if "admin" not in principal.roles:
         q = q.where(Job.owner_user_id == principal.user_id)
     res = await session.execute(q)
@@ -185,15 +185,7 @@ async def _tool_list_tags(session: AsyncSession, arguments: dict[str, Any]) -> d
     )
     rows = res.scalars().all()
     tags = [
-        schemas.TagOut(
-            id=str(t.id),
-            name=str(t.name),
-            source_url=t.source_url,
-            breach_date=t.breach_date.isoformat() if t.breach_date else None,
-            type=t.type,
-            notes=t.notes,
-            created_at=t.created_at.isoformat(),
-        ).model_dump(mode="json")
+        schemas.TagOut.from_tag(t).model_dump(mode="json")
         for t in rows
     ]
     return {"tags": tags, "truncated": len(rows) >= lim}

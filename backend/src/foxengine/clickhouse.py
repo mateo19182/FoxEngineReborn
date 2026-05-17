@@ -2,7 +2,7 @@ from typing import Any
 
 import clickhouse_connect
 
-from foxengine.clickhouse_schema import LEADS_DDL
+from foxengine.clickhouse_schema import CLICKHOUSE_SCHEMA_DDL
 from foxengine.config import get_settings
 
 _client: Any = None
@@ -33,4 +33,18 @@ async def get_ch_client() -> Any:
 
 async def ensure_clickhouse_schema() -> None:
     client = await get_ch_client()
-    await client.command(LEADS_DDL)
+    await _drop_legacy_schema_if_needed(client)
+    for ddl in CLICKHOUSE_SCHEMA_DDL:
+        await client.command(ddl)
+
+
+async def _drop_legacy_schema_if_needed(client: Any) -> None:
+    legacy = await client.query(
+        "SELECT count() FROM system.columns "
+        "WHERE database = currentDatabase() AND table = 'leads' AND name = 'tag_ids'"
+    )
+    if int(legacy.first_row[0]) == 0:
+        return
+    await client.command("DROP TABLE IF EXISTS lead_tags")
+    await client.command("DROP TABLE IF EXISTS lead_identities")
+    await client.command("DROP TABLE IF EXISTS leads")

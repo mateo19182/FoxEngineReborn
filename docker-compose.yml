@@ -9,6 +9,11 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fox -d foxengine"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
@@ -20,6 +25,11 @@ services:
       - "9009:9000"
     volumes:
       - chdata:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user default --password fox --query 'SELECT 1' >/dev/null"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
 
   rustfs:
     image: rustfs/rustfs:latest
@@ -75,10 +85,12 @@ services:
       FOX_LLM_API_KEY: ${FOX_LLM_API_KEY:-}
       FOX_LLM_HEALTH_PATH: ${FOX_LLM_HEALTH_PATH:-health}
     depends_on:
-      - postgres
-      - clickhouse
-      - rustfs
-      - llama-cpp
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
 
   worker:
     build:
@@ -97,9 +109,12 @@ services:
       FOX_S3_ACCESS_KEY_ID: rustfsadmin
       FOX_S3_SECRET_ACCESS_KEY: rustfsadmin
     depends_on:
-      - postgres
-      - clickhouse
-      - rustfs
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
 
 volumes:
   pgdata:

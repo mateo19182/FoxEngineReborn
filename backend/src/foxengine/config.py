@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
     max_export_rows: int = 5_000_000
 
-    merged_sources_cap: int = 200
+    related_rows_cap: int = 1000
 
     llm_enabled: bool = True
     llm_base_url: str = "http://localhost:8080"

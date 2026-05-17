@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import logging
+import tempfile
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -19,14 +20,20 @@ from foxengine.db.models import Batch, IngestRejection, Job
 from foxengine.db.session import get_session_factory
 from foxengine.services.ingest import resolve_tag_ids
 from foxengine.services.ingest_rows import (
+    CH_IDENTITY_INSERT_COLUMNS,
     CH_INSERT_COLUMNS,
+    CH_TAG_INSERT_COLUMNS,
     RowOutcome,
     csv_row_to_raw,
     ingest_timestamp,
+    materialize_identity_rows,
     materialize_lead_row,
+    materialize_tag_rows,
 )
 
 log = logging.getLogger(__name__)
+CH_INGEST_FLUSH_ROWS = 50_000
+S3_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 async def run_ingest_file_job(job_id: UUID) -> None:
@@ -45,6 +52,7 @@ async def run_ingest_file_job(job_id: UUID) -> None:
         cm_raw = ck.get("column_map")
         column_map: dict[str, Any] = cm_raw if isinstance(cm_raw, dict) else {}
         column_map_s = {str(k): str(v) for k, v in column_map.items()}
+        manual_column_map = str(ck.get("column_map_source") or "") == "manual"
         default_region = ck.get("default_phone_region")
         default_region_s = str(default_region).strip().upper() if default_region else None
         csv_delim = str(ck.get("csv_delimiter") or ",")
@@ -84,110 +92,137 @@ async def run_ingest_file_job(job_id: UUID) -> None:
         region_name=s.s3_region,
     ) as c:
         obj = await c.get_object(Bucket=s.s3_bucket_uploads, Key=s3_key)
-        body = await obj["Body"].read()
+        with tempfile.TemporaryFile() as tmp:
+            stream = obj["Body"]
+            while True:
+                chunk = await stream.read(S3_DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+            tmp.seek(0)
 
-    text = body.decode("utf-8", errors="replace")
-    ch_rows: list[list[Any]] = []
-    rejections: list[tuple[int, str, str]] = []
-    seen_hashes: set[str] = set()
-    accepted = 0
-    rejected = 0
-    dup = 0
-    rib = 0
-    ts = ingest_timestamp()
+            text_file = io.TextIOWrapper(tmp, encoding="utf-8", errors="replace", newline="")
+            ch = await get_ch_client()
+            ch_rows: list[list[Any]] = []
+            identity_rows: list[list[Any]] = []
+            tag_rows: list[list[Any]] = []
+            rejections: list[tuple[int, str, str]] = []
+            seen_hashes: set[str] = set()
+            accepted = 0
+            rejected = 0
+            dup = 0
+            rib = 0
+            ts = ingest_timestamp()
 
-    if fmt == "jsonl":
-        for i, raw_s in enumerate(text.splitlines()):
-            line_no = i + 1
-            raw_s = raw_s.strip()
-            if not raw_s or raw_s.startswith("#"):
-                continue
-            try:
-                raw = json.loads(raw_s)
-            except json.JSONDecodeError:
-                rejections.append((line_no, "invalid json", raw_s[:8000]))
-                rejected += 1
-                continue
-            if not isinstance(raw, dict):
-                rejections.append((line_no, "json must be object", raw_s[:8000]))
-                rejected += 1
-                continue
-            rib, accepted, dup, rejected = _append_row(
-                raw,
-                batch.id,
-                rib,
-                accepted,
-                dup,
-                rejected,
-                line_no,
-                tag_id_strs,
-                seen_hashes,
-                ts,
-                default_region_s,
-                ch_rows,
-                rejections,
-            )
-    elif fmt == "csv":
-        reader = csv.reader(io.StringIO(text), delimiter=csv_delim)
-        all_rows = list(reader)
-        if not all_rows:
-            async with factory() as session:
-                await _fail_job(session, job_id, "empty csv")
-            return
-        header = [h.strip() for h in all_rows[0]]
-        for j, cells in enumerate(all_rows[1:]):
-            line_no = j + 2
-            raw = csv_row_to_raw(header, cells, column_map_s)
-            rib, accepted, dup, rejected = _append_row(
-                raw,
-                batch.id,
-                rib,
-                accepted,
-                dup,
-                rejected,
-                line_no,
-                tag_id_strs,
-                seen_hashes,
-                ts,
-                default_region_s,
-                ch_rows,
-                rejections,
-            )
-    elif fmt == "combo":
-        for i, raw_s in enumerate(text.splitlines()):
-            line_no = i + 1
-            raw_s = raw_s.strip()
-            if not raw_s or raw_s.startswith("#"):
-                continue
-            if ":" not in raw_s:
-                rejections.append((line_no, "combo line needs colon", raw_s[:8000]))
-                rejected += 1
-                continue
-            left, right = raw_s.split(":", 1)
-            raw = {"email": left.strip(), "password": right.strip()}
-            rib, accepted, dup, rejected = _append_row(
-                raw,
-                batch.id,
-                rib,
-                accepted,
-                dup,
-                rejected,
-                line_no,
-                tag_id_strs,
-                seen_hashes,
-                ts,
-                default_region_s,
-                ch_rows,
-                rejections,
-            )
-    else:
-        async with factory() as session:
-            await _fail_job(session, job_id, f"unsupported format {fmt!r}")
-        return
+            async def flush_if_needed() -> None:
+                if len(ch_rows) >= CH_INGEST_FLUSH_ROWS:
+                    await _flush_clickhouse_rows(ch, ch_rows, identity_rows, tag_rows)
 
-    ch = await get_ch_client()
-    if ch_rows:
-        await ch.insert("leads", ch_rows, column_names=CH_INSERT_COLUMNS)
+            if fmt == "jsonl":
+                for i, raw_s in enumerate(text_file):
+                    line_no = i + 1
+                    raw_s = raw_s.strip()
+                    if not raw_s or raw_s.startswith("#"):
+                        continue
+                    try:
+                        raw = json.loads(raw_s)
+                    except json.JSONDecodeError:
+                        rejections.append((line_no, "invalid json", raw_s[:8000]))
+                        rejected += 1
+                        continue
+                    if not isinstance(raw, dict):
+                        rejections.append((line_no, "json must be object", raw_s[:8000]))
+                        rejected += 1
+                        continue
+                    rib, accepted, dup, rejected = _append_row(
+                        raw,
+                        batch.id,
+                        rib,
+                        accepted,
+                        dup,
+                        rejected,
+                        line_no,
+                        tag_id_strs,
+                        seen_hashes,
+                        ts,
+                        default_region_s,
+                        ch_rows,
+                        identity_rows,
+                        tag_rows,
+                        rejections,
+                    )
+                    await flush_if_needed()
+            elif fmt == "csv":
+                reader = csv.reader(text_file, delimiter=csv_delim)
+                try:
+                    header = [h.strip() for h in next(reader)]
+                except StopIteration:
+                    async with factory() as session:
+                        await _fail_job(session, job_id, "empty csv")
+                    return
+                for j, cells in enumerate(reader):
+                    line_no = j + 2
+                    raw = csv_row_to_raw(
+                        header,
+                        cells,
+                        column_map_s,
+                        allow_known_field_fallback=not manual_column_map,
+                    )
+                    rib, accepted, dup, rejected = _append_row(
+                        raw,
+                        batch.id,
+                        rib,
+                        accepted,
+                        dup,
+                        rejected,
+                        line_no,
+                        tag_id_strs,
+                        seen_hashes,
+                        ts,
+                        default_region_s,
+                        ch_rows,
+                        identity_rows,
+                        tag_rows,
+                        rejections,
+                    )
+                    await flush_if_needed()
+            elif fmt == "combo":
+                for i, raw_s in enumerate(text_file):
+                    line_no = i + 1
+                    raw_s = raw_s.strip()
+                    if not raw_s or raw_s.startswith("#"):
+                        continue
+                    if ":" not in raw_s:
+                        rejections.append((line_no, "combo line needs colon", raw_s[:8000]))
+                        rejected += 1
+                        continue
+                    left, right = raw_s.split(":", 1)
+                    raw = {"email": left.strip(), "password": right.strip()}
+                    rib, accepted, dup, rejected = _append_row(
+                        raw,
+                        batch.id,
+                        rib,
+                        accepted,
+                        dup,
+                        rejected,
+                        line_no,
+                        tag_id_strs,
+                        seen_hashes,
+                        ts,
+                        default_region_s,
+                        ch_rows,
+                        identity_rows,
+                        tag_rows,
+                        rejections,
+                    )
+                    await flush_if_needed()
+            else:
+                async with factory() as session:
+                    await _fail_job(session, job_id, f"unsupported format {fmt!r}")
+                return
+
+            if ch_rows:
+                await _flush_clickhouse_rows(ch, ch_rows, identity_rows, tag_rows)
 
     async with factory() as session:
         for line_no, reason, raw_line in rejections:
@@ -235,6 +270,8 @@ def _append_row(
     ts: datetime,
     default_region: str | None,
     ch_rows: list[list[Any]],
+    identity_rows: list[list[Any]],
+    tag_rows: list[list[Any]],
     rejections: list[tuple[int, str, str]],
 ) -> tuple[int, int, int, int]:
     outcome, ch_row, reason, raw_line = materialize_lead_row(
@@ -242,7 +279,6 @@ def _append_row(
         batch_id=batch_id,
         row_in_batch=rib + 1,
         ingest_ts=ts,
-        tag_id_strs=tag_id_strs,
         seen_hashes=seen_hashes,
         default_phone_region=default_region,
     )
@@ -255,7 +291,35 @@ def _append_row(
     new_rib = rib + 1
     ch_row[1] = new_rib
     ch_rows.append(ch_row)
+    identity_rows.extend(materialize_identity_rows(ch_row))
+    tag_rows.extend(
+        materialize_tag_rows(
+            tag_id_strs,
+            ch_row,
+            assigned_at=ts,
+            source="ingest_file",
+        )
+    )
     return new_rib, accepted + 1, dup, rejected
+
+
+async def _flush_clickhouse_rows(
+    ch: Any,
+    ch_rows: list[list[Any]],
+    identity_rows: list[list[Any]],
+    tag_rows: list[list[Any]],
+) -> None:
+    await ch.insert("leads", ch_rows, column_names=CH_INSERT_COLUMNS)
+    await ch.insert(
+        "lead_identities",
+        identity_rows,
+        column_names=CH_IDENTITY_INSERT_COLUMNS,
+    )
+    if tag_rows:
+        await ch.insert("lead_tags", tag_rows, column_names=CH_TAG_INSERT_COLUMNS)
+    ch_rows.clear()
+    identity_rows.clear()
+    tag_rows.clear()
 
 
 async def _fail_job(session: Any, job_id: UUID, msg: str) -> None:

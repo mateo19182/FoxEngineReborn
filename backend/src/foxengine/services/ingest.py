@@ -10,10 +10,14 @@ from foxengine.config import get_settings
 from foxengine.db.models import Batch, IngestRejection, Tag
 from foxengine.deps import Principal
 from foxengine.services.ingest_rows import (
+    CH_IDENTITY_INSERT_COLUMNS,
     CH_INSERT_COLUMNS,
+    CH_TAG_INSERT_COLUMNS,
     RowOutcome,
     ingest_timestamp,
+    materialize_identity_rows,
     materialize_lead_row,
+    materialize_tag_rows,
 )
 
 
@@ -61,6 +65,8 @@ async def ingest_sync(
     rejected = 0
     dup = 0
     ch_rows: list[list[Any]] = []
+    identity_rows: list[list[Any]] = []
+    tag_rows: list[list[Any]] = []
     row_no = 0
     rib = 0
     ts = ingest_timestamp()
@@ -72,7 +78,6 @@ async def ingest_sync(
             batch_id=batch.id,
             row_in_batch=rib + 1,
             ingest_ts=ts,
-            tag_id_strs=tag_id_strs,
             seen_hashes=seen_hashes,
             default_phone_region=None,
         )
@@ -92,7 +97,17 @@ async def ingest_sync(
             continue
         assert ch_row is not None
         rib += 1
+        ch_row[1] = rib
         ch_rows.append(ch_row)
+        identity_rows.extend(materialize_identity_rows(ch_row))
+        tag_rows.extend(
+            materialize_tag_rows(
+                tag_id_strs,
+                ch_row,
+                assigned_at=ts,
+                source="ingest_sync",
+            )
+        )
         accepted += 1
 
     if ch_rows:
@@ -101,6 +116,17 @@ async def ingest_sync(
             ch_rows,
             column_names=CH_INSERT_COLUMNS,
         )
+        await ch.insert(
+            "lead_identities",
+            identity_rows,
+            column_names=CH_IDENTITY_INSERT_COLUMNS,
+        )
+        if tag_rows:
+            await ch.insert(
+                "lead_tags",
+                tag_rows,
+                column_names=CH_TAG_INSERT_COLUMNS,
+            )
 
     batch.accepted_rows = accepted
     batch.rejected_rows = rejected

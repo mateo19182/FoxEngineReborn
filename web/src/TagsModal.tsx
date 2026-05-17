@@ -5,6 +5,7 @@ export type TagRow = {
   id: string;
   name: string;
   type: string | null;
+  family: string | null;
 };
 
 type TagsModalProps = {
@@ -67,7 +68,11 @@ export function TagsModal({
                   <button type="button" className="tag-chip" onClick={() => onApplyTag(t.name)} title={`Add tag:${t.name}`}>
                     <span className="tag-chip__label">
                       {t.name}
-                      {t.type ? <span className="muted"> · {t.type}</span> : null}
+                      {(() => {
+                        const meta =
+                          t.type && t.family ? `${t.type} (${t.family})` : (t.type ?? t.family ?? "");
+                        return meta ? <span className="muted"> · {meta}</span> : null;
+                      })()}
                     </span>
                   </button>
                   {isAdmin ? (

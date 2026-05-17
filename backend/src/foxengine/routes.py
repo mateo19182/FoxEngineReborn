@@ -34,17 +34,25 @@ from foxengine.deps import AdminDep, OperatorDep, PrincipalDep, SessionDep, View
 from foxengine.security import hash_password, issue_jwt, new_api_key_material, verify_password
 from foxengine.services.archive_unpack import merge_text_parts, unpack_archive
 from foxengine.services.assistant_chat import run_assistant_stream, run_assistant_turn
-from foxengine.services.format_detect import analyze_text_payload, detect_for_ingest
+from foxengine.services.column_map_llm import suggest_column_map_with_llm
+from foxengine.services.format_detect import (
+    CANONICAL,
+    CANONICAL_FIELDS,
+    analyze_text_payload,
+    detect_for_ingest,
+)
 from foxengine.services.ingest import ingest_sync
-from foxengine.services.job_queries import compile_leads_where, merged_profile_select
+from foxengine.services.job_queries import compile_leads_where, leads_select_sql
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, llm_health_status
 from foxengine.services.nl_to_dsl import translate_nl_to_dsl
+from foxengine.services.related_rows import annotate_related_groups, collect_identity_values
 from foxengine.settings_store import (
     is_setup_complete,
     mark_setup_complete,
     read_jwt_secret,
     write_jwt_secret,
 )
+from foxengine.tag_taxonomy import taxonomy_payload
 from foxengine.tasks import foxengine_bulk_tag, foxengine_export, foxengine_ingest_file
 
 router = APIRouter()
@@ -452,24 +460,18 @@ async def revoke_key(
     return {"status": "ok"}
 
 
+@router.get("/tags/taxonomy", response_model=schemas.TagTaxonomyOut)
+async def tag_taxonomy(_: ViewerDep) -> schemas.TagTaxonomyOut:
+    return schemas.TagTaxonomyOut.model_validate(taxonomy_payload())
+
+
 @router.get("/tags", response_model=list[schemas.TagOut])
 async def list_tags(session: SessionDep, _: ViewerDep) -> list[schemas.TagOut]:
     res = await session.execute(
         select(Tag).where(Tag.deleted_at.is_(None)).order_by(Tag.name)
     )
     rows = res.scalars().all()
-    return [
-        schemas.TagOut(
-            id=str(t.id),
-            name=str(t.name),
-            source_url=t.source_url,
-            breach_date=t.breach_date.isoformat() if t.breach_date else None,
-            type=t.type,
-            notes=t.notes,
-            created_at=t.created_at.isoformat(),
-        )
-        for t in rows
-    ]
+    return [schemas.TagOut.from_tag(t) for t in rows]
 
 
 @router.post("/tags", response_model=schemas.TagOut)
@@ -508,15 +510,7 @@ async def create_tag(
         target_id=str(tag.id),
         details={"name": str(tag.name)},
     )
-    return schemas.TagOut(
-        id=str(tag.id),
-        name=str(tag.name),
-        source_url=tag.source_url,
-        breach_date=tag.breach_date.isoformat() if tag.breach_date else None,
-        type=tag.type,
-        notes=tag.notes,
-        created_at=tag.created_at.isoformat(),
-    )
+    return schemas.TagOut.from_tag(tag)
 
 
 @router.patch("/tags/{tag_id}", response_model=schemas.TagOut)
@@ -537,22 +531,14 @@ async def patch_tag(
         tag.source_url = body.source_url
     if body.breach_date is not None:
         tag.breach_date = date.fromisoformat(body.breach_date) if body.breach_date else None
-    if body.type is not None:
+    if "type" in body.model_fields_set:
         tag.type = body.type
     if body.notes is not None:
         tag.notes = body.notes
     await session.commit()
     await session.refresh(tag)
     _audit(request, principal, "tag.update", target_kind="tag", target_id=str(tag_id))
-    return schemas.TagOut(
-        id=str(tag.id),
-        name=str(tag.name),
-        source_url=tag.source_url,
-        breach_date=tag.breach_date.isoformat() if tag.breach_date else None,
-        type=tag.type,
-        notes=tag.notes,
-        created_at=tag.created_at.isoformat(),
-    )
+    return schemas.TagOut.from_tag(tag)
 
 
 @router.delete("/tags/{tag_id}")
@@ -617,34 +603,53 @@ async def run_query(
     except Exception as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid dsl: {e}") from e
 
-    s = get_settings()
     ch = await get_ch_client()
     settings_ch = {
         "max_execution_time": 60,
         "max_result_rows": 1000,
         "max_memory_usage": "4000000000",
     }
-    if body.view == "merged":
-        settings_ch["max_result_rows"] = 2_000_000
-        merged_sel = merged_profile_select(s.merged_sources_cap)
-        count_sql = (
-            f"SELECT count() FROM (SELECT identity_key FROM leads WHERE {where_sql} "
-            f"GROUP BY identity_key) AS _m"
-        )
-        data_sql = (
-            f"SELECT {merged_sel} FROM leads WHERE {where_sql} GROUP BY identity_key "
-            f"ORDER BY ingest_ts DESC LIMIT {int(body.limit)} OFFSET {int(body.offset)}"
-        )
-    else:
-        count_sql = f"SELECT count() FROM leads WHERE {where_sql}"
-        data_sql = (
-            f"SELECT * FROM leads WHERE {where_sql} ORDER BY ingest_ts DESC "
-            f"LIMIT {int(body.limit)} OFFSET {int(body.offset)}"
-        )
+    count_sql = f"SELECT count() FROM leads WHERE {where_sql}"
 
     cnt = (await ch.query(count_sql, parameters=params, settings=settings_ch)).first_row[0]
+    data_sql = leads_select_sql(where_sql, limit=body.limit, offset=body.offset)
     qr = await ch.query(data_sql, parameters=params, settings=settings_ch)
     out_rows = [dict(r) for r in qr.named_results()]
+    if body.view == "related" and out_rows:
+        identity_values = collect_identity_values(out_rows)
+        related_params = dict(params)
+        related_params.update(
+            {
+                "rel_emails": identity_values["email_norm"],
+                "rel_phones": identity_values["phone_norm"],
+                "rel_usernames": identity_values["username"],
+                "rel_id_cards": identity_values["id_card"],
+            }
+        )
+        s = get_settings()
+        related_where_sql = (
+            "has({rel_emails:Array(String)}, email_norm) "
+            "OR has({rel_phones:Array(String)}, phone_norm) "
+            "OR has({rel_usernames:Array(String)}, lower(username)) "
+            "OR has({rel_id_cards:Array(String)}, id_card) "
+        )
+        related_sql = leads_select_sql(related_where_sql, limit=s.related_rows_cap)
+        related_settings_ch = {**settings_ch, "max_result_rows": int(s.related_rows_cap)}
+        related_qr = await ch.query(
+            related_sql,
+            parameters=related_params,
+            settings=related_settings_ch,
+        )
+        by_key: dict[tuple[str, int], dict[str, Any]] = {}
+        matched_keys: set[tuple[str, int]] = set()
+        for row in out_rows:
+            key = (str(row["batch_id"]), int(row["row_in_batch"]))
+            matched_keys.add(key)
+            by_key[key] = row
+        for row in (dict(r) for r in related_qr.named_results()):
+            key = (str(row["batch_id"]), int(row["row_in_batch"]))
+            by_key.setdefault(key, row)
+        out_rows = annotate_related_groups(list(by_key.values()), matched_keys)
     ms = int((time.perf_counter() - t0) * 1000)
     _audit(
         request,
@@ -818,8 +823,148 @@ def _form_bool(v: str) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _parse_column_map_json(column_map_json: str | None) -> tuple[bool, dict[str, str]]:
+    if column_map_json is None or not column_map_json.strip():
+        return False, {}
+    try:
+        parsed = json.loads(column_map_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "column_map_json must be a JSON object"
+        ) from e
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "column_map_json must be a JSON object",
+        )
+
+    out: dict[str, str] = {}
+    for raw_header, raw_field in parsed.items():
+        header = str(raw_header).strip()
+        field = str(raw_field).strip()
+        if not header:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "column_map_json headers must be non-empty strings",
+            )
+        if field not in CANONICAL:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unknown canonical field in column_map_json: {field}",
+            )
+        out[header] = field
+    return True, out
+
+
+def _coerce_column_map(raw: dict[Any, Any], *, label: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw_header, raw_field in raw.items():
+        header = str(raw_header).strip()
+        field = str(raw_field).strip()
+        if not header:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{label} headers must be non-empty strings",
+            )
+        if field not in CANONICAL:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unknown canonical field in {label}: {field}",
+            )
+        out[header] = field
+    return out
+
+
+def _parse_column_map_by_file_json(
+    column_map_by_file_json: str | None,
+) -> tuple[bool, dict[str, dict[str, str]]]:
+    if column_map_by_file_json is None or not column_map_by_file_json.strip():
+        return False, {}
+    try:
+        parsed = json.loads(column_map_by_file_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "column_map_by_file_json must be an object of {filename: column_map}",
+        ) from e
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "column_map_by_file_json must be an object of {filename: column_map}",
+        )
+
+    out: dict[str, dict[str, str]] = {}
+    for raw_name, raw_map in parsed.items():
+        inner_name = str(raw_name)
+        if not isinstance(raw_map, dict):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "column_map_by_file_json values must be JSON objects",
+            )
+        out[inner_name] = _coerce_column_map(raw_map, label="column_map_by_file_json")
+    return True, out
+
+
 def _inner_storage_key(inner_name: str) -> str:
     return inner_name.replace("/", "_").replace("\\", "_")[:220]
+
+
+def _preview_file_payload(
+    inner_name: str,
+    blob: bytes,
+    *,
+    staging_key: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    d = analyze_text_payload(inner_name, blob)
+    preview = {
+        "inner_name": inner_name,
+        "format": d.format,
+        "format_confidence": d.format_confidence,
+        "csv_delimiter": d.csv_delimiter,
+        "headers": d.headers,
+        "column_guesses": d.column_guesses,
+        "recommended_column_map": d.recommended_column_map,
+        "sample_rows": d.sample_rows[:15],
+        "size": len(blob),
+    }
+    staged = {
+        "inner_name": inner_name,
+        "staging_key": staging_key,
+        "size": len(blob),
+        "format": d.format,
+        "detect_confidence": d.format_confidence,
+        "csv_delimiter": d.csv_delimiter or ",",
+        "column_map": dict(d.recommended_column_map) if d.format == "csv" else {},
+    }
+    return preview, staged
+
+
+def _upload_checkpoint_parts(upload: Job) -> list[dict[str, Any]]:
+    raw_parts = dict(upload.checkpoint or {}).get("parts")
+    if not isinstance(raw_parts, list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "upload preview is missing file parts")
+    parts: list[dict[str, Any]] = []
+    for raw in raw_parts:
+        if isinstance(raw, dict):
+            parts.append(raw)
+    return parts
+
+
+def _selected_upload_parts(
+    upload: Job,
+    selected_files: list[str],
+) -> list[dict[str, Any]]:
+    parts = _upload_checkpoint_parts(upload)
+    by_name = {str(part.get("inner_name")): part for part in parts if part.get("inner_name")}
+    if selected_files:
+        selected: list[dict[str, Any]] = []
+        for name in selected_files:
+            part = by_name.get(name)
+            if part is None:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown selected file: {name}")
+            selected.append(part)
+        return selected
+    return parts
 
 
 def _normalize_storage_prefix(store: schemas.StorageStore, raw: str) -> str:
@@ -861,8 +1006,8 @@ def _bucket_for_store(s, store: schemas.StorageStore) -> str:
 async def _tag_names_for_batch(session: AsyncSession, batch_id: UUID) -> list[str]:
     ch = await get_ch_client()
     qr = await ch.query(
-        "SELECT arrayDistinct(arrayFlatten(groupArray(tag_ids))) AS ids "
-        "FROM leads WHERE batch_id = {bid:UUID}",
+        "SELECT groupUniqArray(tag_id) AS ids "
+        "FROM lead_tags WHERE batch_id = {bid:UUID}",
         parameters={"bid": batch_id},
     )
     row = qr.first_row
@@ -1095,7 +1240,7 @@ async def batch_rejections_csv(
 
 @router.get("/jobs", response_model=list[schemas.JobOut])
 async def list_jobs(session: SessionDep, principal: PrincipalDep) -> list[schemas.JobOut]:
-    q = select(Job).order_by(Job.updated_at.desc()).limit(100)
+    q = select(Job).where(Job.type != "ingest_upload").order_by(Job.updated_at.desc()).limit(100)
     if "admin" not in principal.roles:
         q = q.where(Job.owner_user_id == principal.user_id)
     res = await session.execute(q)
@@ -1206,36 +1351,276 @@ async def start_export(
 
 @router.post("/ingest/preview")
 async def ingest_preview(
-    _: OperatorDep,
+    request: Request,
+    session: SessionDep,
+    principal: OperatorDep,
     file: UploadFile = File(...),
-    merge_archive: str = Form("false"),
 ) -> dict[str, Any]:
     data = await file.read()
     outer_fn = file.filename or "upload.bin"
     parts = unpack_archive(outer_fn, data)
-    if _form_bool(merge_archive) and len(parts) > 1:
-        parts = [merge_text_parts(parts)]
+
+    upload_id = uuid4()
+    s = get_settings()
+    staged_parts: list[dict[str, Any]] = []
     files_out: list[dict[str, Any]] = []
-    for inner_name, blob in parts:
-        d = analyze_text_payload(inner_name, blob)
-        files_out.append(
-            {
-                "inner_name": inner_name,
-                "format": d.format,
-                "format_confidence": d.format_confidence,
-                "csv_delimiter": d.csv_delimiter,
-                "headers": d.headers,
-                "column_guesses": d.column_guesses,
-                "recommended_column_map": d.recommended_column_map,
-                "sample_rows": d.sample_rows[:15],
-            }
-        )
+    session_boto = aioboto3.Session()
+    async with session_boto.client(
+        "s3",
+        endpoint_url=s.s3_endpoint_url,
+        aws_access_key_id=s.s3_access_key_id,
+        aws_secret_access_key=s.s3_secret_access_key,
+        region_name=s.s3_region,
+    ) as c:
+        for idx, (inner_name, blob) in enumerate(parts):
+            safe = _inner_storage_key(inner_name)
+            key = f"uploads/staged/{upload_id}/{idx:04d}-{safe}"
+            await c.put_object(Bucket=s.s3_bucket_uploads, Key=key, Body=blob)
+            preview, staged = _preview_file_payload(inner_name, blob, staging_key=key)
+            files_out.append(preview)
+            staged_parts.append(staged)
+
+    upload = Job(
+        id=upload_id,
+        type="ingest_upload",
+        state="done",
+        owner_user_id=principal.user_id,
+        processed_rows=len(staged_parts),
+        checkpoint={
+            "outer_filename": outer_fn,
+            "parts": staged_parts,
+            "total_size": len(data),
+        },
+        finished_at=datetime.now(UTC),
+    )
+    session.add(upload)
+    _audit(
+        request,
+        principal,
+        "ingest.upload.preview",
+        target_kind="job",
+        target_id=str(upload_id),
+        details={
+            "outer_filename": outer_fn,
+            "count": len(staged_parts),
+            "total_size": len(data),
+        },
+    )
+    await session.commit()
     return {
+        "upload_id": str(upload_id),
         "outer_filename": outer_fn,
-        "merge_archive": _form_bool(merge_archive),
+        "merge_archive": False,
         "file_count": len(parts),
+        "canonical_fields": list(CANONICAL_FIELDS),
         "files": files_out,
     }
+
+
+@router.post("/ingest/suggest-column-map", response_model=schemas.ColumnMapSuggestResponse)
+async def ingest_suggest_column_map(
+    _: OperatorDep,
+    body: schemas.ColumnMapSuggestRequest,
+) -> schemas.ColumnMapSuggestResponse:
+    try:
+        column_map = await suggest_column_map_with_llm(
+            headers=body.headers,
+            sample_rows=body.sample_rows,
+            inner_name=body.inner_name,
+        )
+    except LlmUnavailableError as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    except LlmError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    return schemas.ColumnMapSuggestResponse(
+        column_map=column_map,
+        canonical_fields=list(CANONICAL_FIELDS),
+    )
+
+
+@router.post("/ingest/file/from-upload")
+async def ingest_file_from_upload(
+    request: Request,
+    body: schemas.IngestQueuedUploadRequest,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> dict[str, Any]:
+    try:
+        upload_id = UUID(body.upload_id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid upload_id") from e
+
+    res = await session.execute(select(Job).where(Job.id == upload_id))
+    upload = res.scalar_one_or_none()
+    if (
+        upload is None
+        or upload.type != "ingest_upload"
+        or not _can_view_job(principal, upload)
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "upload not found")
+
+    tags = [x.strip() for x in body.tag_names.split(",") if x.strip()]
+    user_maps_by_file_provided, user_maps_by_file = _parse_column_map_by_file_json(
+        body.column_map_by_file_json
+    )
+    selected_parts = _selected_upload_parts(upload, body.selected_files)
+    if not selected_parts:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "choose at least one file to ingest")
+
+    outer_fn = str(dict(upload.checkpoint or {}).get("outer_filename") or "upload.bin")
+    s = get_settings()
+    items_out: list[dict[str, Any]] = []
+    session_boto = aioboto3.Session()
+    async with session_boto.client(
+        "s3",
+        endpoint_url=s.s3_endpoint_url,
+        aws_access_key_id=s.s3_access_key_id,
+        aws_secret_access_key=s.s3_secret_access_key,
+        region_name=s.s3_region,
+    ) as c:
+        parts_to_queue = selected_parts
+        if body.merge_archive and len(selected_parts) > 1:
+            blobs: list[tuple[str, bytes]] = []
+            for part in selected_parts:
+                inner_name = str(part.get("inner_name") or "")
+                staging_key = str(part.get("staging_key") or "")
+                if not inner_name or not staging_key:
+                    raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid staged upload part")
+                obj = await c.get_object(Bucket=s.s3_bucket_uploads, Key=staging_key)
+                blobs.append((inner_name, await obj["Body"].read()))
+            merged_name, merged_blob = merge_text_parts(blobs)
+            merged_key = f"uploads/staged/{upload_id}/merged-{_inner_storage_key(merged_name)}"
+            await c.put_object(Bucket=s.s3_bucket_uploads, Key=merged_key, Body=merged_blob)
+            resolved_fmt, detect_extras = detect_for_ingest(merged_name, merged_blob, "auto")
+            parts_to_queue = [
+                {
+                    "inner_name": merged_name,
+                    "staging_key": merged_key,
+                    "size": len(merged_blob),
+                    "format": resolved_fmt,
+                    "detect_confidence": detect_extras.get("detect_confidence"),
+                    "csv_delimiter": detect_extras.get("csv_delimiter", ","),
+                    "column_map": detect_extras.get("column_map", {}),
+                }
+            ]
+
+        for part in parts_to_queue:
+            inner_name = str(part.get("inner_name") or "")
+            staging_key = str(part.get("staging_key") or "")
+            if not inner_name or not staging_key:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid staged upload part")
+
+            raw_fmt = part.get("format")
+            if not isinstance(raw_fmt, str):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "staged upload part is missing format",
+                )
+            resolved_fmt = raw_fmt
+            if resolved_fmt not in ("jsonl", "csv", "combo"):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"unsupported format {resolved_fmt!r}",
+                )
+
+            auto_map = part.get("column_map")
+            merged_map: dict[str, str] = {}
+            column_map_source = "auto"
+            if (
+                user_maps_by_file_provided
+                and inner_name in user_maps_by_file
+                and resolved_fmt == "csv"
+            ):
+                merged_map.update(user_maps_by_file[inner_name])
+                column_map_source = "manual"
+            elif isinstance(auto_map, dict):
+                merged_map.update({str(k): str(v) for k, v in auto_map.items()})
+
+            batch_id = uuid4()
+            job_id = uuid4()
+            safe = _inner_storage_key(inner_name)
+            key = f"uploads/{batch_id}/{safe}"
+            await c.copy_object(
+                Bucket=s.s3_bucket_uploads,
+                Key=key,
+                CopySource={"Bucket": s.s3_bucket_uploads, "Key": staging_key},
+            )
+
+            if len(parts_to_queue) == 1 and not body.merge_archive:
+                display_name = body.batch_name or outer_fn
+            else:
+                base = body.batch_name or outer_fn
+                display_name = f"{base} — {inner_name}"
+
+            batch = Batch(
+                id=batch_id,
+                name=display_name,
+                source_filename=inner_name,
+                upload_uri=f"s3://{s.s3_bucket_uploads}/{key}",
+                ingested_by=principal.user_id,
+            )
+            job = Job(
+                id=job_id,
+                type="ingest_file",
+                state="queued",
+                batch_id=batch_id,
+                owner_user_id=principal.user_id,
+                checkpoint={
+                    "s3_key": key,
+                    "format": resolved_fmt,
+                    "tag_names": tags,
+                    "column_map": merged_map,
+                    "column_map_source": column_map_source,
+                    "csv_delimiter": part.get("csv_delimiter"),
+                    "detect_confidence": part.get("detect_confidence"),
+                    "source_upload_id": str(upload_id),
+                },
+            )
+            session.add(batch)
+            session.add(job)
+            await session.flush()
+            items_out.append(
+                {
+                    "batch_id": str(batch_id),
+                    "job_id": str(job_id),
+                    "inner_name": inner_name,
+                    "format": resolved_fmt,
+                    "detect_confidence": part.get("detect_confidence"),
+                }
+            )
+
+    _audit(
+        request,
+        principal,
+        "batch.upload",
+        target_kind="batch",
+        target_id=items_out[0]["batch_id"] if items_out else "",
+        details={
+            "outer_filename": outer_fn,
+            "upload_id": str(upload_id),
+            "merge_archive": body.merge_archive,
+            "count": len(items_out),
+            "formats": [x["format"] for x in items_out],
+        },
+    )
+    _audit(
+        request,
+        principal,
+        "batch.ingest.start",
+        target_kind="batch",
+        target_id=items_out[0]["batch_id"] if items_out else "",
+        details={"job_ids": [x["job_id"] for x in items_out]},
+    )
+    await session.commit()
+    for it in items_out:
+        await foxengine_ingest_file.defer_async(job_id=it["job_id"])
+    if len(items_out) == 1:
+        return {
+            "batch_id": items_out[0]["batch_id"],
+            "job_id": items_out[0]["job_id"],
+            "items": items_out,
+        }
+    return {"items": items_out}
 
 
 @router.post("/ingest/file")
@@ -1248,6 +1633,7 @@ async def ingest_file(
     tag_names: str = Form(""),
     batch_name: str | None = Form(default=None),
     column_map_json: str | None = Form(default=None),
+    column_map_by_file_json: str | None = Form(default=None),
     merge_archive: str = Form("false"),
 ) -> dict[str, Any]:
     fmt_in = format.strip().lower()
@@ -1257,20 +1643,10 @@ async def ingest_file(
             "format must be auto, jsonl, csv, or combo",
         )
     tags = [x.strip() for x in tag_names.split(",") if x.strip()]
-    user_column_map: dict[str, str] = {}
-    if column_map_json and column_map_json.strip():
-        try:
-            parsed = json.loads(column_map_json)
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "column_map_json must be a JSON object"
-            ) from e
-        if not isinstance(parsed, dict):
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                "column_map_json must be a JSON object",
-            )
-        user_column_map = {str(k): str(v) for k, v in parsed.items()}
+    user_column_map_provided, user_column_map = _parse_column_map_json(column_map_json)
+    user_maps_by_file_provided, user_maps_by_file = _parse_column_map_by_file_json(
+        column_map_by_file_json
+    )
 
     data = await file.read()
     outer_fn = file.filename or "upload.bin"
@@ -1296,9 +1672,18 @@ async def ingest_file(
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
             auto_map = detect_extras.get("column_map")
             merged_map: dict[str, str] = {}
-            if isinstance(auto_map, dict):
+            column_map_source = "auto"
+            manual_map: dict[str, str] | None = None
+            if user_maps_by_file_provided and inner_name in user_maps_by_file:
+                manual_map = user_maps_by_file[inner_name]
+            elif user_column_map_provided:
+                manual_map = user_column_map
+
+            if manual_map is not None and resolved_fmt == "csv":
+                merged_map.update(manual_map)
+                column_map_source = "manual"
+            elif isinstance(auto_map, dict):
                 merged_map.update({str(k): str(v) for k, v in auto_map.items()})
-            merged_map.update(user_column_map)
 
             batch_id = uuid4()
             job_id = uuid4()
@@ -1330,6 +1715,7 @@ async def ingest_file(
                     "format": resolved_fmt,
                     "tag_names": tags,
                     "column_map": merged_map,
+                    "column_map_source": column_map_source,
                     "csv_delimiter": detect_extras.get("csv_delimiter", ","),
                     "detect_confidence": detect_extras.get("detect_confidence"),
                 },
