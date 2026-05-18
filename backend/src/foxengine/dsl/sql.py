@@ -90,7 +90,7 @@ def _pred_sql(
     field = p.field
     mode, core = _split_value(p.value)
 
-    if field in ("tag", "tag.type", "tag.family", "tag.breach_date"):
+    if field in ("tag", "tag.family", "tag.breach_date"):
         key = (field, p.value)
         uuids = tag_uuid_lists.get(key, [])
         if not uuids:

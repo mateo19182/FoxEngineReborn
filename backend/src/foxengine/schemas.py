@@ -2,8 +2,6 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from foxengine.tag_taxonomy import assert_known_tag_type, family_for_type
-
 StorageStore = Literal["uploads", "exports"]
 
 
@@ -119,54 +117,43 @@ class TagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=512)
     source_url: str | None = None
     breach_date: str | None = None
-    type: str | None = None
+    family: str | None = None
     notes: str | None = None
 
-    @field_validator("type", mode="before")
+    @field_validator("family", mode="before")
     @classmethod
-    def validate_tag_type(cls, v: object) -> str | None:
+    def validate_family_code(cls, v: object) -> str | None:
         if v is None:
             return None
         if not isinstance(v, str):
-            raise TypeError("tag type must be a string or null")
-        try:
-            return assert_known_tag_type(v)
-        except ValueError as e:
-            raise ValueError(str(e)) from e
+            raise TypeError("tag family must be a string or null")
+        s = v.strip()
+        return s.upper() if s else None
 
 
 class TagPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=512)
     source_url: str | None = None
     breach_date: str | None = None
-    type: str | None = None
+    family: str | None = None
     notes: str | None = None
 
-    @field_validator("type", mode="before")
+    @field_validator("family", mode="before")
     @classmethod
-    def validate_tag_type(cls, v: object) -> str | None:
+    def validate_family_code(cls, v: object) -> str | None:
         if v is None:
             return None
         if not isinstance(v, str):
-            raise TypeError("tag type must be a string or null")
-        try:
-            return assert_known_tag_type(v)
-        except ValueError as e:
-            raise ValueError(str(e)) from e
-
-
-class TagTaxonomyTypeItem(BaseModel):
-    code: str
-    family: str
+            raise TypeError("tag family must be a string or null")
+        s = v.strip()
+        return s.upper() if s else None
 
 
 class TagTaxonomyFamilyItem(BaseModel):
     code: str
-    types: list[str]
 
 
 class TagTaxonomyOut(BaseModel):
-    types: list[TagTaxonomyTypeItem]
     families: list[TagTaxonomyFamilyItem]
 
 
@@ -175,13 +162,12 @@ class TagOut(BaseModel):
     name: str
     source_url: str | None
     breach_date: str | None
-    type: str | None
     family: str | None
     notes: str | None
     created_at: str
 
     @classmethod
-    def from_tag(cls, t: object) -> Self:
+    def from_tag(cls, t: object, *, family_code: str | None = None) -> Self:
         """Build TagOut from a Tag ORM row (avoids circular imports on Tag model)."""
         breach = getattr(t, "breach_date", None)
         return cls(
@@ -189,10 +175,51 @@ class TagOut(BaseModel):
             name=str(getattr(t, "name")),
             source_url=getattr(t, "source_url", None),
             breach_date=breach.isoformat() if breach else None,
-            type=getattr(t, "type", None),
-            family=family_for_type(getattr(t, "type", None)),
+            family=family_code,
             notes=getattr(t, "notes", None),
             created_at=getattr(t, "created_at").isoformat(),
+        )
+
+
+class TagFamilyCreate(BaseModel):
+    code: str = Field(min_length=1, max_length=128)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, v: object) -> str:
+        if not isinstance(v, str):
+            raise TypeError("family code must be a string")
+        s = v.strip()
+        if not s:
+            raise ValueError("family code is required")
+        return s.upper()
+
+
+class TagFamilyPatch(BaseModel):
+    code: str = Field(min_length=1, max_length=128)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, v: object) -> str:
+        if not isinstance(v, str):
+            raise TypeError("family code must be a string")
+        s = v.strip()
+        if not s:
+            raise ValueError("family code is required")
+        return s.upper()
+
+
+class TagFamilyOut(BaseModel):
+    id: str
+    code: str
+    created_at: str
+
+    @classmethod
+    def from_family(cls, row: object) -> Self:
+        return cls(
+            id=str(getattr(row, "id")),
+            code=str(getattr(row, "code")),
+            created_at=getattr(row, "created_at").isoformat(),
         )
 
 
@@ -207,6 +234,44 @@ class QueryRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
     view: Literal["rows", "related"] = "rows"
+
+
+class SavedViewCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    dsl: str = Field(min_length=1)
+    view: Literal["rows", "related"] = "rows"
+
+
+class SavedViewPatchRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    dsl: str | None = Field(default=None, min_length=1)
+    view: Literal["rows", "related"] | None = None
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> Self:
+        if not any(field in self.model_fields_set for field in ("name", "dsl", "view")):
+            raise ValueError("at least one field is required")
+        return self
+
+
+class SavedViewOut(BaseModel):
+    id: str
+    name: str
+    dsl: str
+    view: Literal["rows", "related"]
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_saved_view(cls, row: object) -> Self:
+        return cls(
+            id=str(getattr(row, "id")),
+            name=str(getattr(row, "name")),
+            dsl=str(getattr(row, "dsl")),
+            view=getattr(row, "view"),
+            created_at=getattr(row, "created_at").isoformat(),
+            updated_at=getattr(row, "updated_at").isoformat(),
+        )
 
 
 class QueryNlRequest(BaseModel):
@@ -246,6 +311,51 @@ class IngestQueuedUploadRequest(BaseModel):
     batch_name: str | None = None
     column_map_by_file_json: str | None = None
     merge_archive: bool = False
+
+
+class IngestDuplicateMatch(BaseModel):
+    source_sha256: str
+    existing_batch_id: str
+    existing_filename: str | None = None
+    existing_batch_name: str | None = None
+    ingest_ts: str
+
+
+class IngestPreviewFile(BaseModel):
+    inner_name: str
+    format: str
+    format_confidence: float
+    csv_delimiter: str | None = None
+    headers: list[str] | None = None
+    column_guesses: dict[str, list[dict[str, Any]]] | None = None
+    recommended_column_map: dict[str, str] | None = None
+    sample_rows: list[dict[str, str]] = Field(default_factory=list)
+    size: int
+    duplicate_match: IngestDuplicateMatch | None = None
+
+
+class IngestPreviewResponse(BaseModel):
+    upload_id: str
+    outer_filename: str
+    merge_archive: bool
+    file_count: int
+    canonical_fields: list[str]
+    files: list[IngestPreviewFile]
+
+
+class IngestQueuedItemResponse(BaseModel):
+    batch_id: str
+    job_id: str
+    inner_name: str
+    format: str
+    detect_confidence: float | None = None
+    duplicate_match: IngestDuplicateMatch | None = None
+
+
+class IngestQueuedResponse(BaseModel):
+    batch_id: str | None = None
+    job_id: str | None = None
+    items: list[IngestQueuedItemResponse]
 
 
 class JobOut(BaseModel):

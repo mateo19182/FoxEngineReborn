@@ -6,9 +6,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from foxengine.db.models import Tag
+from foxengine.db.models import Tag, TagFamily
 from foxengine.dsl.ast_nodes import And, Expr, Not, Or, Pred
-from foxengine.tag_taxonomy import types_for_family
 
 
 def walk_preds(expr: Expr) -> list[Pred]:
@@ -30,7 +29,7 @@ async def resolve_tag_predicates(
     """Map (field, raw_value) -> matching tag UUIDs (non-deleted)."""
     out: dict[tuple[str, str], list[UUID]] = {}
     for p in preds:
-        if p.field not in ("tag", "tag.type", "tag.family", "tag.breach_date"):
+        if p.field not in ("tag", "tag.family", "tag.breach_date"):
             continue
         key = (p.field, p.value)
         if key in out:
@@ -40,21 +39,11 @@ async def resolve_tag_predicates(
                 func.lower(Tag.name) == func.lower(p.value),
                 Tag.deleted_at.is_(None),
             )
-        elif p.field == "tag.type":
-            stmt = select(Tag.id).where(
-                Tag.deleted_at.is_(None),
-                Tag.type.isnot(None),
-                func.upper(Tag.type) == p.value.strip().upper(),
-            )
         elif p.field == "tag.family":
-            codes = types_for_family(p.value)
-            if not codes:
-                out[key] = []
-                continue
             stmt = select(Tag.id).where(
+                Tag.family_id == TagFamily.id,
                 Tag.deleted_at.is_(None),
-                Tag.type.isnot(None),
-                func.upper(Tag.type).in_(codes),
+                func.upper(TagFamily.code) == p.value.strip().upper(),
             )
         else:
             raw = p.value

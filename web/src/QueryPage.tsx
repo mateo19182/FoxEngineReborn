@@ -1,12 +1,24 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { api } from "./api";
+import {
+  api,
+  createSavedView,
+  deleteSavedView,
+  listSavedViews,
+  patchSavedView,
+  type QueryView,
+  type SavedView,
+} from "./api";
 import { DslHelpModal } from "./DslHelpModal";
 import { ExportModal } from "./ExportModal";
+import { ConfirmModal } from "./ConfirmModal";
 import { Modal } from "./Modal";
 import { QueryNlModal } from "./QueryNlModal";
+import { SavedViewsModal } from "./SavedViewsModal";
 import { TagAddModal } from "./TagAddModal";
+import { TagFamiliesModal } from "./TagFamiliesModal";
 import { TagsModal } from "./TagsModal";
-import { appendTagFilter } from "./queryDsl";
+import { appendTagFamilyFilter, appendTagFilter } from "./queryDsl";
+import { applySavedViewToQuery } from "./querySavedViewUtils";
 
 type QueryResponse = {
   total: number;
@@ -19,14 +31,11 @@ type QueryResponse = {
 type Tag = {
   id: string;
   name: string;
-  type: string | null;
   family: string | null;
   breach_date: string | null;
 };
 
 type Me = { roles: string[]; llm_nl_enabled?: boolean };
-
-type QueryView = "rows" | "related";
 
 export function QueryPage() {
   const [dsl, setDsl] = useState("email:*@example.com");
@@ -39,11 +48,19 @@ export function QueryPage() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [addTagOpen, setAddTagOpen] = useState(false);
+  const [familiesOpen, setFamiliesOpen] = useState(false);
   const [tagsModalOpen, setTagsModalOpen] = useState(false);
+  const [savedViewsOpen, setSavedViewsOpen] = useState(false);
   const [dslHelpOpen, setDslHelpOpen] = useState(false);
   const [nlModalOpen, setNlModalOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [detailRowIndex, setDetailRowIndex] = useState<number | null>(null);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [selectedSavedViewId, setSelectedSavedViewId] = useState("");
+  const [pendingDeleteTagId, setPendingDeleteTagId] = useState<string | null>(null);
+  const [removingTagId, setRemovingTagId] = useState<string | null>(null);
+  const [confirmSavedViewDeleteOpen, setConfirmSavedViewDeleteOpen] = useState(false);
+  const [deletingSavedView, setDeletingSavedView] = useState(false);
 
   const columns = useMemo(() => {
     if (!res?.rows.length) return [];
@@ -67,28 +84,122 @@ export function QueryPage() {
   const isAdmin = me?.roles.includes("admin");
   const nlUi = me?.llm_nl_enabled !== false;
 
-  async function loadTags() {
-    const [t, m] = await Promise.all([api<Tag[]>("/tags"), api<Me>("/auth/me")]);
+  async function loadPageData() {
+    const [t, m, views] = await Promise.all([
+      api<Tag[]>("/tags"),
+      api<Me>("/auth/me"),
+      listSavedViews(),
+    ]);
     setTags(t);
     setMe(m);
+    setSavedViews(views);
+    setSelectedSavedViewId((prev) => {
+      if (!views.length) return "";
+      if (prev && views.some((v) => v.id === prev)) return prev;
+      return views[0]!.id;
+    });
   }
 
   useEffect(() => {
-    void loadTags().catch((e) => setErr(String(e)));
+    void loadPageData().catch((e) => setErr(String(e)));
   }, []);
 
   function applyTagFilter(tagName: string) {
     setDsl((prev) => appendTagFilter(prev, tagName));
   }
 
-  async function removeTag(id: string) {
-    if (!confirm("Delete this tag?")) return;
+  function applyFamilyFilter(familyCode: string) {
+    setDsl((prev) => appendTagFamilyFilter(prev, familyCode));
+  }
+
+  function requestRemoveTag(id: string) {
+    setPendingDeleteTagId(id);
+  }
+
+  async function confirmRemoveTag() {
+    if (!pendingDeleteTagId) return;
     setErr(null);
+    setRemovingTagId(pendingDeleteTagId);
     try {
-      await api(`/tags/${id}`, { method: "DELETE" });
-      await loadTags();
+      await api(`/tags/${pendingDeleteTagId}`, { method: "DELETE" });
+      setPendingDeleteTagId(null);
+      await loadPageData();
     } catch (ex) {
       setErr(String(ex));
+    } finally {
+      setRemovingTagId(null);
+    }
+  }
+
+  const selectedSavedView = savedViews.find((item) => item.id === selectedSavedViewId) ?? null;
+
+  async function saveCurrentView(name: string) {
+    if (!name) {
+      setErr("Saved view name is required.");
+      return;
+    }
+    setErr(null);
+    try {
+      const created = await createSavedView({ name, dsl, view });
+      await loadPageData();
+      setSelectedSavedViewId(created.id);
+    } catch (ex) {
+      setErr(String(ex));
+    }
+  }
+
+  function loadSelectedSavedView() {
+    if (!selectedSavedView) return;
+    const next = applySavedViewToQuery(selectedSavedView);
+    setErr(null);
+    setExportMsg(null);
+    setDsl(next.dsl);
+    setView(next.view);
+  }
+
+  async function updateSelectedSavedView() {
+    if (!selectedSavedView) return;
+    setErr(null);
+    try {
+      await patchSavedView(selectedSavedView.id, { dsl, view });
+      await loadPageData();
+    } catch (ex) {
+      setErr(String(ex));
+    }
+  }
+
+  async function renameSelectedSavedViewByName(name: string) {
+    if (!selectedSavedView) return;
+    if (!name) {
+      setErr("Saved view name is required.");
+      return;
+    }
+    setErr(null);
+    try {
+      await patchSavedView(selectedSavedView.id, { name });
+      await loadPageData();
+    } catch (ex) {
+      setErr(String(ex));
+    }
+  }
+
+  async function requestDeleteSelectedSavedView() {
+    if (!selectedSavedView) return;
+    setConfirmSavedViewDeleteOpen(true);
+  }
+
+  async function confirmDeleteSelectedSavedView() {
+    if (!selectedSavedView) return;
+    setErr(null);
+    setDeletingSavedView(true);
+    try {
+      await deleteSavedView(selectedSavedView.id);
+      setConfirmSavedViewDeleteOpen(false);
+      await loadPageData();
+    } catch (ex) {
+      setErr(String(ex));
+    } finally {
+      setDeletingSavedView(false);
     }
   }
 
@@ -111,7 +222,9 @@ export function QueryPage() {
   }
 
   const panelErr =
-    err && !addTagOpen && !dslHelpOpen && !tagsModalOpen && !nlModalOpen ? <p className="error">{err}</p> : null;
+    err && !addTagOpen && !dslHelpOpen && !tagsModalOpen && !savedViewsOpen && !nlModalOpen ? (
+      <p className="error">{err}</p>
+    ) : null;
 
   return (
     <div>
@@ -140,6 +253,9 @@ export function QueryPage() {
                 </button>
                 <button type="button" className="link-btn" onClick={() => setTagsModalOpen(true)}>
                   Tags
+                </button>
+                <button type="button" className="link-btn" onClick={() => setSavedViewsOpen(true)}>
+                  Saved views
                 </button>
               </span>
             </div>
@@ -253,13 +369,53 @@ export function QueryPage() {
         onClose={() => setTagsModalOpen(false)}
         tags={tags}
         onApplyTag={applyTagFilter}
-        onRemoveTag={(id) => void removeTag(id)}
+        onApplyFamily={applyFamilyFilter}
+        onRemoveTag={requestRemoveTag}
         isAdmin={!!isAdmin}
         canWrite={!!canWrite}
         onAddTag={() => setAddTagOpen(true)}
+        onManageFamilies={() => setFamiliesOpen(true)}
         error={err}
       />
-      <TagAddModal open={addTagOpen} onClose={() => setAddTagOpen(false)} onCreated={loadTags} />
+      <TagAddModal open={addTagOpen} onClose={() => setAddTagOpen(false)} onCreated={loadPageData} />
+      <TagFamiliesModal open={familiesOpen} onClose={() => setFamiliesOpen(false)} onChanged={loadPageData} />
+      <SavedViewsModal
+        open={savedViewsOpen}
+        onClose={() => setSavedViewsOpen(false)}
+        savedViews={savedViews}
+        selectedSavedViewId={selectedSavedViewId}
+        onSelectSavedView={setSelectedSavedViewId}
+        onCreate={saveCurrentView}
+        onLoadSelected={loadSelectedSavedView}
+        onUpdateSelected={updateSelectedSavedView}
+        onRenameSelected={renameSelectedSavedViewByName}
+        onDeleteSelected={requestDeleteSelectedSavedView}
+        error={err}
+      />
+      <ConfirmModal
+        open={pendingDeleteTagId !== null}
+        title="Delete tag"
+        message="Delete this tag?"
+        confirmLabel="Delete tag"
+        pending={removingTagId !== null}
+        onConfirm={() => void confirmRemoveTag()}
+        onCancel={() => {
+          if (removingTagId) return;
+          setPendingDeleteTagId(null);
+        }}
+      />
+      <ConfirmModal
+        open={confirmSavedViewDeleteOpen}
+        title="Delete saved view"
+        message={selectedSavedView ? `Delete saved view "${selectedSavedView.name}"?` : "Delete selected saved view?"}
+        confirmLabel="Delete saved view"
+        pending={deletingSavedView}
+        onConfirm={() => void confirmDeleteSelectedSavedView()}
+        onCancel={() => {
+          if (deletingSavedView) return;
+          setConfirmSavedViewDeleteOpen(false);
+        }}
+      />
       <DslHelpModal open={dslHelpOpen} onClose={() => setDslHelpOpen(false)} />
       <QueryNlModal
         open={nlModalOpen}

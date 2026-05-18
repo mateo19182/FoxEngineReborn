@@ -5,10 +5,11 @@ type ModalProps = {
   title: string;
   onClose: () => void;
   wide?: boolean;
+  headerActions?: React.ReactNode;
   children: React.ReactNode;
 };
 
-export function Modal({ open, title, onClose, wide, children }: ModalProps) {
+export function Modal({ open, title, onClose, wide, headerActions, children }: ModalProps) {
   const titleId = useId();
 
   useEffect(() => {
@@ -28,9 +29,12 @@ export function Modal({ open, title, onClose, wide, children }: ModalProps) {
       <div className={`modal${wide ? " modal--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="modal__head">
           <h2 id={titleId}>{title}</h2>
-          <button type="button" className="secondary modal__close" onClick={onClose} aria-label="Close">
-            Close
-          </button>
+          <div className="modal__head-actions">
+            {headerActions}
+            <button type="button" className="secondary modal__close" onClick={onClose} aria-label="Close">
+              Close
+            </button>
+          </div>
         </div>
         <div className="modal__body">{children}</div>
       </div>

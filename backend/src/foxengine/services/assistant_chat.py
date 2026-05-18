@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foxengine import schemas
-from foxengine.db.models import Batch, Job, Tag
+from foxengine.db.models import Batch, Job, Tag, TagFamily
 from foxengine.deps import Principal
 
 
@@ -181,14 +181,19 @@ async def _tool_list_tags(session: AsyncSession, arguments: dict[str, Any]) -> d
             lim = 80
     lim = max(1, min(lim, 200))
     res = await session.execute(
-        select(Tag).where(Tag.deleted_at.is_(None)).order_by(Tag.name).limit(lim)
+        select(Tag, TagFamily.code)
+        .select_from(Tag)
+        .outerjoin(TagFamily, Tag.family_id == TagFamily.id)
+        .where(Tag.deleted_at.is_(None))
+        .order_by(Tag.name)
+        .limit(lim)
     )
-    rows = res.scalars().all()
+    rows = res.all()
     tags = [
-        schemas.TagOut.from_tag(t).model_dump(mode="json")
-        for t in rows
+        schemas.TagOut.from_tag(tag, family_code=family_code).model_dump(mode="json")
+        for tag, family_code in rows
     ]
-    return {"tags": tags, "truncated": len(rows) >= lim}
+    return {"tags": tags, "truncated": len(tags) >= lim}
 
 
 async def run_tool_calls(

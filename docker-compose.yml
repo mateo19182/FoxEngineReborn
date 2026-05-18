@@ -1,6 +1,8 @@
 services:
   postgres:
     image: postgres:16-bookworm
+    networks:
+      - foxengine
     environment:
       POSTGRES_USER: fox
       POSTGRES_PASSWORD: fox
@@ -17,6 +19,8 @@ services:
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
+    networks:
+      - foxengine
     environment:
       # Without this, the image locks `default` to localhost-only; other services get auth failures.
       CLICKHOUSE_PASSWORD: fox
@@ -33,6 +37,8 @@ services:
 
   rustfs:
     image: rustfs/rustfs:latest
+    networks:
+      - foxengine
     environment:
       RUSTFS_ACCESS_KEY: rustfsadmin
       RUSTFS_SECRET_KEY: rustfsadmin
@@ -44,6 +50,8 @@ services:
 
   llama-cpp:
     image: ghcr.io/ggml-org/llama.cpp:server
+    networks:
+      - foxengine
     ports:
       - "8080:8080"
     volumes:
@@ -66,6 +74,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    networks:
+      - foxengine
     ports:
       - "8000:8000"
     environment:
@@ -96,7 +106,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["/bin/sh", "-c", "cd /app && .venv/bin/python -c 'from foxengine.bootstrap import ensure_procrastinate_schema; ensure_procrastinate_schema()' && .venv/bin/foxengine-worker"]
+    networks:
+      - foxengine
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "cd /app && python /app/docker/wait-for-postgres.py && .venv/bin/python -c 'from foxengine.bootstrap import ensure_procrastinate_schema; ensure_procrastinate_schema()' && .venv/bin/foxengine-worker",
+      ]
     environment:
       FOX_MASTER_KEY: ${FOX_MASTER_KEY:-61zn4lPUOxHKpCWWnqA0XCsQkOzNzM55WXU-qVj37EU=}
       FOX_DATABASE_URL: postgresql+asyncpg://fox:fox@postgres:5432/foxengine
@@ -115,6 +132,10 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_started
+
+networks:
+  foxengine:
+    driver: bridge
 
 volumes:
   pgdata:

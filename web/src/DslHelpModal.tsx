@@ -90,12 +90,6 @@ export function DslHelpModal({ open, onClose }: DslHelpModalProps) {
               </td>
             </tr>
             <tr>
-              <td>By tag type</td>
-              <td className="mono">
-                <code>tag.type:LEAK</code>
-              </td>
-            </tr>
-            <tr>
               <td>By tag family</td>
               <td className="mono">
                 <code>tag.family:DATA_LEAK</code>

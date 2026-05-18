@@ -7,10 +7,9 @@ import re
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from foxengine.db.models import Tag
+from foxengine.db.models import Tag, TagFamily
 from foxengine.dsl.parser import parse_dsl
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, chat_completion
-from foxengine.tag_taxonomy import family_for_type
 
 CANONICAL_FIELDS = (
     "phone",
@@ -35,7 +34,7 @@ CANONICAL_FIELDS = (
     "last_seen",
 )
 
-TAG_FIELDS = ("tag", "tag.type", "tag.family", "tag.breach_date")
+TAG_FIELDS = ("tag", "tag.family", "tag.breach_date")
 
 _SYSTEM_TEMPLATE = """You translate natural-language search requests into FoxEngine DSL.
 
@@ -45,7 +44,7 @@ Grammar:
 - Predicates: field:value (lowercase field; components use dots, e.g. email.domain:outlook.com)
 - Wildcards in values: * (e.g. email:*@example.com, username:john*)
 - Boolean: AND OR NOT with parentheses for grouping
-- Tag filters: tag:Name, tag.type:LOGIN, tag.family:DATA_LEAK,
+- Tag filters: tag:Name, tag.family:DATA_LEAK,
   tag.breach_date:YYYY or YYYY-MM-DD (no wildcards on tags)
 
 Lead fields (use only these): {fields}
@@ -66,7 +65,9 @@ Examples:
 async def _tag_lines(session: AsyncSession) -> str:
     rows = (
         await session.execute(
-            select(Tag.name, Tag.type, Tag.breach_date)
+            select(Tag.name, Tag.type, Tag.breach_date, TagFamily.code)
+            .select_from(Tag)
+            .outerjoin(TagFamily, Tag.family_id == TagFamily.id)
             .where(Tag.deleted_at.is_(None))
             .order_by(Tag.name)
             .limit(200)
@@ -75,13 +76,12 @@ async def _tag_lines(session: AsyncSession) -> str:
     if not rows:
         return "(none)"
     lines: list[str] = []
-    for name, typ, breach in rows:
+    for name, typ, breach, family_code in rows:
         bits = [str(name)]
         if typ:
             bits.append(f"type={typ}")
-            fam = family_for_type(typ)
-            if fam:
-                bits.append(f"family={fam}")
+        if family_code:
+            bits.append(f"family={family_code}")
         if breach:
             bits.append(f"breach_date={breach}")
         lines.append("- " + ", ".join(bits))

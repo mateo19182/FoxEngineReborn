@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { api, getToken, onUnauthorized } from "./api";
 import { DocTip } from "./DocTip";
+import { getDuplicatePreviewFiles } from "./ingestDuplicateUtils";
 
 const COLUMN_MAP_SAMPLE_ROW_COUNT = 5;
 const COLUMN_MAP_DISCARD_VALUE = "__discard__";
@@ -34,6 +35,7 @@ type IngestItem = {
   inner_name: string;
   format: string;
   detect_confidence?: number;
+  duplicate_match?: DuplicateMatch | null;
 };
 
 type IngestResponse = {
@@ -57,6 +59,15 @@ type PreviewFile = {
   recommended_column_map?: Record<string, string>;
   sample_rows?: Record<string, string>[];
   size?: number;
+  duplicate_match?: DuplicateMatch | null;
+};
+
+type DuplicateMatch = {
+  source_sha256: string;
+  existing_batch_id: string;
+  existing_filename?: string | null;
+  existing_batch_name?: string | null;
+  ingest_ts: string;
 };
 
 type PreviewResponse = {
@@ -76,7 +87,6 @@ type ColumnMapSuggestResponse = {
 type TagOption = {
   id: string;
   name: string;
-  type: string | null;
   family: string | null;
 };
 
@@ -159,6 +169,7 @@ export function IngestPage() {
         item.format === "csv" &&
         item.headers?.length,
     ) ?? [];
+  const duplicatePreviewFiles = getDuplicatePreviewFiles(previewData?.files, selectedFileNameSet);
   const canChooseArchiveMembers = (previewData?.files.length ?? 0) > 1;
   const canMergeSelectedFiles = canChooseArchiveMembers && selectedFileNames.length > 1;
   const selectedTagNames = useMemo(
@@ -457,13 +468,7 @@ export function IngestPage() {
                         }}
                       >
                         <span>{tag.name}</span>
-                        {tag.type || tag.family ? (
-                          <span className="muted">
-                            {tag.type ? tag.type : ""}
-                            {tag.type && tag.family ? " · " : ""}
-                            {tag.family ? tag.family : ""}
-                          </span>
-                        ) : null}
+                        {tag.family ? <span className="muted">{tag.family}</span> : null}
                       </button>
                     ))
                   ) : (
@@ -542,6 +547,27 @@ export function IngestPage() {
                       <DocTip text="Concatenate the selected archive members into one ingest with section headers instead of one job per file." />
                     </label>
                   ) : null}
+                </div>
+              ) : null}
+              {duplicatePreviewFiles.length ? (
+                <div className="ingest-preview-duplicates">
+                  <strong>Duplicate file warning</strong>
+                  <p className="hint">
+                    {duplicatePreviewFiles.length} selected file
+                    {duplicatePreviewFiles.length === 1 ? "" : "s"} already exist in earlier batches. You can
+                    still queue this upload.
+                  </p>
+                  <ul className="ingest-preview-files">
+                    {duplicatePreviewFiles.map((item) => (
+                      <li key={`dup:${item.inner_name}`}>
+                        <code>{item.inner_name}</code>
+                        <span className="ingest-preview-file-meta">
+                          <span>matches batch {item.duplicate_match?.existing_batch_id}</span>
+                          <span>{item.duplicate_match?.existing_filename || "unknown filename"}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               ) : null}
             </div>

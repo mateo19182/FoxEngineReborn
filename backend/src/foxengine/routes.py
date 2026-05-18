@@ -26,7 +26,9 @@ from foxengine.db.models import (
     IngestRejection,
     Job,
     Role,
+    SavedView,
     Tag,
+    TagFamily,
     User,
     UserRole,
 )
@@ -35,6 +37,7 @@ from foxengine.security import hash_password, issue_jwt, new_api_key_material, v
 from foxengine.services.archive_unpack import merge_text_parts, unpack_archive
 from foxengine.services.assistant_chat import run_assistant_stream, run_assistant_turn
 from foxengine.services.column_map_llm import suggest_column_map_with_llm
+from foxengine.services.file_hash import sha256_hex
 from foxengine.services.format_detect import (
     CANONICAL,
     CANONICAL_FIELDS,
@@ -52,7 +55,6 @@ from foxengine.settings_store import (
     read_jwt_secret,
     write_jwt_secret,
 )
-from foxengine.tag_taxonomy import taxonomy_payload
 from foxengine.tasks import foxengine_bulk_tag, foxengine_export, foxengine_ingest_file
 
 router = APIRouter()
@@ -460,18 +462,131 @@ async def revoke_key(
     return {"status": "ok"}
 
 
+async def _resolve_tag_family_id(session: AsyncSession, family_code: str | None) -> UUID | None:
+    if family_code is None:
+        return None
+    res = await session.execute(
+        select(TagFamily).where(func.upper(TagFamily.code) == family_code.upper())
+    )
+    row = res.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown tag family {family_code!r}")
+    return row.id
+
+
+@router.get("/tags/families", response_model=list[schemas.TagFamilyOut])
+async def list_tag_families(session: SessionDep, _: ViewerDep) -> list[schemas.TagFamilyOut]:
+    rows = (
+        await session.execute(
+            select(TagFamily).order_by(func.upper(TagFamily.code), TagFamily.created_at)
+        )
+    ).scalars().all()
+    return [schemas.TagFamilyOut.from_family(row) for row in rows]
+
+
+@router.post("/tags/families", response_model=schemas.TagFamilyOut)
+async def create_tag_family(
+    request: Request,
+    body: schemas.TagFamilyCreate,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> schemas.TagFamilyOut:
+    row = TagFamily(code=body.code)
+    session.add(row)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tag family code already exists") from None
+    await session.refresh(row)
+    _audit(
+        request,
+        principal,
+        "tag_family.create",
+        target_kind="tag_family",
+        target_id=str(row.id),
+        details={"code": row.code},
+    )
+    return schemas.TagFamilyOut.from_family(row)
+
+
+@router.patch("/tags/families/{family_id}", response_model=schemas.TagFamilyOut)
+async def patch_tag_family(
+    request: Request,
+    family_id: UUID,
+    body: schemas.TagFamilyPatch,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> schemas.TagFamilyOut:
+    res = await session.execute(select(TagFamily).where(TagFamily.id == family_id))
+    row = res.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    row.code = body.code
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tag family code already exists") from None
+    await session.refresh(row)
+    _audit(
+        request,
+        principal,
+        "tag_family.update",
+        target_kind="tag_family",
+        target_id=str(row.id),
+        details={"code": row.code},
+    )
+    return schemas.TagFamilyOut.from_family(row)
+
+
+@router.delete("/tags/families/{family_id}")
+async def delete_tag_family(
+    request: Request,
+    family_id: UUID,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> dict[str, str]:
+    row = await session.get(TagFamily, family_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    await session.delete(row)
+    await session.commit()
+    _audit(
+        request,
+        principal,
+        "tag_family.delete",
+        target_kind="tag_family",
+        target_id=str(family_id),
+        details={"code": row.code},
+    )
+    return {"status": "ok"}
+
+
 @router.get("/tags/taxonomy", response_model=schemas.TagTaxonomyOut)
-async def tag_taxonomy(_: ViewerDep) -> schemas.TagTaxonomyOut:
-    return schemas.TagTaxonomyOut.model_validate(taxonomy_payload())
+async def tag_taxonomy(session: SessionDep, _: ViewerDep) -> schemas.TagTaxonomyOut:
+    families = (
+        await session.execute(
+            select(TagFamily).order_by(func.upper(TagFamily.code), TagFamily.created_at)
+        )
+    ).scalars().all()
+    family_items = [
+        schemas.TagTaxonomyFamilyItem(code=row.code)
+        for row in families
+    ]
+    return schemas.TagTaxonomyOut(families=family_items)
 
 
 @router.get("/tags", response_model=list[schemas.TagOut])
 async def list_tags(session: SessionDep, _: ViewerDep) -> list[schemas.TagOut]:
     res = await session.execute(
-        select(Tag).where(Tag.deleted_at.is_(None)).order_by(Tag.name)
+        select(Tag, TagFamily.code)
+        .outerjoin(TagFamily, Tag.family_id == TagFamily.id)
+        .where(Tag.deleted_at.is_(None))
+        .order_by(Tag.name)
     )
-    rows = res.scalars().all()
-    return [schemas.TagOut.from_tag(t) for t in rows]
+    rows = res.all()
+    return [schemas.TagOut.from_tag(tag, family_code=family_code) for tag, family_code in rows]
 
 
 @router.post("/tags", response_model=schemas.TagOut)
@@ -484,11 +599,12 @@ async def create_tag(
     bd: date | None = None
     if body.breach_date:
         bd = date.fromisoformat(body.breach_date)
+    family_id = await _resolve_tag_family_id(session, body.family)
     tag = Tag(
         name=body.name.strip(),
         source_url=body.source_url,
         breach_date=bd,
-        type=body.type,
+        family_id=family_id,
         notes=body.notes,
         created_by=principal.user_id,
     )
@@ -510,7 +626,7 @@ async def create_tag(
         target_id=str(tag.id),
         details={"name": str(tag.name)},
     )
-    return schemas.TagOut.from_tag(tag)
+    return schemas.TagOut.from_tag(tag, family_code=body.family)
 
 
 @router.patch("/tags/{tag_id}", response_model=schemas.TagOut)
@@ -531,14 +647,18 @@ async def patch_tag(
         tag.source_url = body.source_url
     if body.breach_date is not None:
         tag.breach_date = date.fromisoformat(body.breach_date) if body.breach_date else None
-    if "type" in body.model_fields_set:
-        tag.type = body.type
+    if "family" in body.model_fields_set:
+        tag.family_id = await _resolve_tag_family_id(session, body.family)
     if body.notes is not None:
         tag.notes = body.notes
     await session.commit()
     await session.refresh(tag)
     _audit(request, principal, "tag.update", target_kind="tag", target_id=str(tag_id))
-    return schemas.TagOut.from_tag(tag)
+    family_row = await session.get(TagFamily, tag.family_id) if tag.family_id else None
+    family_code = body.family if "family" in body.model_fields_set else (
+        family_row.code if family_row else None
+    )
+    return schemas.TagOut.from_tag(tag, family_code=family_code)
 
 
 @router.delete("/tags/{tag_id}")
@@ -673,6 +793,115 @@ async def run_query(
         "offset": body.offset,
         "view": body.view,
     }
+
+
+@router.get("/saved-views", response_model=list[schemas.SavedViewOut])
+async def list_saved_views(
+    session: SessionDep,
+    principal: ViewerDep,
+) -> list[schemas.SavedViewOut]:
+    res = await session.execute(
+        select(SavedView)
+        .where(SavedView.user_id == principal.user_id)
+        .order_by(SavedView.updated_at.desc())
+    )
+    return [schemas.SavedViewOut.from_saved_view(row) for row in res.scalars().all()]
+
+
+@router.post("/saved-views", response_model=schemas.SavedViewOut)
+async def create_saved_view(
+    request: Request,
+    body: schemas.SavedViewCreateRequest,
+    session: SessionDep,
+    principal: ViewerDep,
+) -> schemas.SavedViewOut:
+    row = SavedView(
+        user_id=principal.user_id,
+        name=body.name.strip(),
+        dsl=body.dsl,
+        view=body.view,
+    )
+    session.add(row)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "saved view name already exists") from None
+    await session.refresh(row)
+    _audit(
+        request,
+        principal,
+        "saved_view.create",
+        target_kind="saved_view",
+        target_id=str(row.id),
+        details={"name": row.name},
+    )
+    return schemas.SavedViewOut.from_saved_view(row)
+
+
+@router.patch("/saved-views/{saved_view_id}", response_model=schemas.SavedViewOut)
+async def patch_saved_view(
+    request: Request,
+    saved_view_id: UUID,
+    body: schemas.SavedViewPatchRequest,
+    session: SessionDep,
+    principal: ViewerDep,
+) -> schemas.SavedViewOut:
+    row = await session.scalar(
+        select(SavedView).where(
+            SavedView.id == saved_view_id,
+            SavedView.user_id == principal.user_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    if body.name is not None:
+        row.name = body.name.strip()
+    if body.dsl is not None:
+        row.dsl = body.dsl
+    if body.view is not None:
+        row.view = body.view
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "saved view name already exists") from None
+    await session.refresh(row)
+    _audit(
+        request,
+        principal,
+        "saved_view.update",
+        target_kind="saved_view",
+        target_id=str(row.id),
+    )
+    return schemas.SavedViewOut.from_saved_view(row)
+
+
+@router.delete("/saved-views/{saved_view_id}")
+async def delete_saved_view(
+    request: Request,
+    saved_view_id: UUID,
+    session: SessionDep,
+    principal: ViewerDep,
+) -> dict[str, str]:
+    row = await session.scalar(
+        select(SavedView).where(
+            SavedView.id == saved_view_id,
+            SavedView.user_id == principal.user_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    await session.delete(row)
+    await session.commit()
+    _audit(
+        request,
+        principal,
+        "saved_view.delete",
+        target_kind="saved_view",
+        target_id=str(saved_view_id),
+    )
+    return {"status": "ok"}
 
 
 @router.post("/query/nl", response_model=schemas.QueryNlResponse)
@@ -937,6 +1166,29 @@ def _preview_file_payload(
         "column_map": dict(d.recommended_column_map) if d.format == "csv" else {},
     }
     return preview, staged
+
+
+async def _duplicate_match_for_hash(
+    session: AsyncSession,
+    source_sha256: str,
+) -> schemas.IngestDuplicateMatch | None:
+    existing = (
+        await session.execute(
+            select(Batch)
+            .where(Batch.source_sha256 == source_sha256, Batch.deleted_at.is_(None))
+            .order_by(Batch.ingest_ts.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        return None
+    return schemas.IngestDuplicateMatch(
+        source_sha256=source_sha256,
+        existing_batch_id=str(existing.id),
+        existing_filename=existing.source_filename,
+        existing_batch_name=existing.name,
+        ingest_ts=existing.ingest_ts.isoformat(),
+    )
 
 
 def _upload_checkpoint_parts(upload: Job) -> list[dict[str, Any]]:
@@ -1349,13 +1601,13 @@ async def start_export(
     return {"job_id": str(job.id)}
 
 
-@router.post("/ingest/preview")
+@router.post("/ingest/preview", response_model=schemas.IngestPreviewResponse)
 async def ingest_preview(
     request: Request,
     session: SessionDep,
     principal: OperatorDep,
     file: UploadFile = File(...),
-) -> dict[str, Any]:
+) -> schemas.IngestPreviewResponse:
     data = await file.read()
     outer_fn = file.filename or "upload.bin"
     parts = unpack_archive(outer_fn, data)
@@ -1376,7 +1628,11 @@ async def ingest_preview(
             safe = _inner_storage_key(inner_name)
             key = f"uploads/staged/{upload_id}/{idx:04d}-{safe}"
             await c.put_object(Bucket=s.s3_bucket_uploads, Key=key, Body=blob)
+            source_sha256 = sha256_hex(blob)
+            duplicate_match = await _duplicate_match_for_hash(session, source_sha256)
             preview, staged = _preview_file_payload(inner_name, blob, staging_key=key)
+            preview["duplicate_match"] = duplicate_match.model_dump() if duplicate_match else None
+            staged["source_sha256"] = source_sha256
             files_out.append(preview)
             staged_parts.append(staged)
 
@@ -1407,14 +1663,14 @@ async def ingest_preview(
         },
     )
     await session.commit()
-    return {
-        "upload_id": str(upload_id),
-        "outer_filename": outer_fn,
-        "merge_archive": False,
-        "file_count": len(parts),
-        "canonical_fields": list(CANONICAL_FIELDS),
-        "files": files_out,
-    }
+    return schemas.IngestPreviewResponse(
+        upload_id=str(upload_id),
+        outer_filename=outer_fn,
+        merge_archive=False,
+        file_count=len(parts),
+        canonical_fields=list(CANONICAL_FIELDS),
+        files=[schemas.IngestPreviewFile(**item) for item in files_out],
+    )
 
 
 @router.post("/ingest/suggest-column-map", response_model=schemas.ColumnMapSuggestResponse)
@@ -1438,13 +1694,13 @@ async def ingest_suggest_column_map(
     )
 
 
-@router.post("/ingest/file/from-upload")
+@router.post("/ingest/file/from-upload", response_model=schemas.IngestQueuedResponse)
 async def ingest_file_from_upload(
     request: Request,
     body: schemas.IngestQueuedUploadRequest,
     session: SessionDep,
     principal: OperatorDep,
-) -> dict[str, Any]:
+) -> schemas.IngestQueuedResponse:
     try:
         upload_id = UUID(body.upload_id)
     except ValueError as e:
@@ -1501,6 +1757,7 @@ async def ingest_file_from_upload(
                     "detect_confidence": detect_extras.get("detect_confidence"),
                     "csv_delimiter": detect_extras.get("csv_delimiter", ","),
                     "column_map": detect_extras.get("column_map", {}),
+                    "source_sha256": sha256_hex(merged_blob),
                 }
             ]
 
@@ -1509,6 +1766,10 @@ async def ingest_file_from_upload(
             staging_key = str(part.get("staging_key") or "")
             if not inner_name or not staging_key:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid staged upload part")
+            source_sha256 = str(part.get("source_sha256") or "").strip()
+            duplicate_match = (
+                await _duplicate_match_for_hash(session, source_sha256) if source_sha256 else None
+            )
 
             raw_fmt = part.get("format")
             if not isinstance(raw_fmt, str):
@@ -1556,6 +1817,7 @@ async def ingest_file_from_upload(
                 id=batch_id,
                 name=display_name,
                 source_filename=inner_name,
+                source_sha256=source_sha256 or None,
                 upload_uri=f"s3://{s.s3_bucket_uploads}/{key}",
                 ingested_by=principal.user_id,
             )
@@ -1574,6 +1836,7 @@ async def ingest_file_from_upload(
                     "csv_delimiter": part.get("csv_delimiter"),
                     "detect_confidence": part.get("detect_confidence"),
                     "source_upload_id": str(upload_id),
+                    "source_sha256": source_sha256 or None,
                 },
             )
             session.add(batch)
@@ -1586,6 +1849,7 @@ async def ingest_file_from_upload(
                     "inner_name": inner_name,
                     "format": resolved_fmt,
                     "detect_confidence": part.get("detect_confidence"),
+                    "duplicate_match": duplicate_match.model_dump() if duplicate_match else None,
                 }
             )
 
@@ -1615,15 +1879,17 @@ async def ingest_file_from_upload(
     for it in items_out:
         await foxengine_ingest_file.defer_async(job_id=it["job_id"])
     if len(items_out) == 1:
-        return {
-            "batch_id": items_out[0]["batch_id"],
-            "job_id": items_out[0]["job_id"],
-            "items": items_out,
-        }
-    return {"items": items_out}
+        return schemas.IngestQueuedResponse(
+            batch_id=items_out[0]["batch_id"],
+            job_id=items_out[0]["job_id"],
+            items=[schemas.IngestQueuedItemResponse(**item) for item in items_out],
+        )
+    return schemas.IngestQueuedResponse(
+        items=[schemas.IngestQueuedItemResponse(**item) for item in items_out]
+    )
 
 
-@router.post("/ingest/file")
+@router.post("/ingest/file", response_model=schemas.IngestQueuedResponse)
 async def ingest_file(
     request: Request,
     session: SessionDep,
@@ -1635,7 +1901,7 @@ async def ingest_file(
     column_map_json: str | None = Form(default=None),
     column_map_by_file_json: str | None = Form(default=None),
     merge_archive: str = Form("false"),
-) -> dict[str, Any]:
+) -> schemas.IngestQueuedResponse:
     fmt_in = format.strip().lower()
     if fmt_in not in ("auto", "jsonl", "csv", "combo"):
         raise HTTPException(
@@ -1666,6 +1932,8 @@ async def ingest_file(
         region_name=s.s3_region,
     ) as c:
         for inner_name, blob in parts:
+            source_sha256 = sha256_hex(blob)
+            duplicate_match = await _duplicate_match_for_hash(session, source_sha256)
             try:
                 resolved_fmt, detect_extras = detect_for_ingest(inner_name, blob, fmt_in)
             except ValueError as e:
@@ -1701,6 +1969,7 @@ async def ingest_file(
                 id=batch_id,
                 name=display_name,
                 source_filename=inner_name,
+                source_sha256=source_sha256,
                 upload_uri=f"s3://{s.s3_bucket_uploads}/{key}",
                 ingested_by=principal.user_id,
             )
@@ -1718,6 +1987,7 @@ async def ingest_file(
                     "column_map_source": column_map_source,
                     "csv_delimiter": detect_extras.get("csv_delimiter", ","),
                     "detect_confidence": detect_extras.get("detect_confidence"),
+                    "source_sha256": source_sha256,
                 },
             )
             session.add(batch)
@@ -1730,6 +2000,7 @@ async def ingest_file(
                     "inner_name": inner_name,
                     "format": resolved_fmt,
                     "detect_confidence": detect_extras.get("detect_confidence"),
+                    "duplicate_match": duplicate_match.model_dump() if duplicate_match else None,
                 }
             )
 
@@ -1758,12 +2029,14 @@ async def ingest_file(
     for it in items_out:
         await foxengine_ingest_file.defer_async(job_id=it["job_id"])
     if len(items_out) == 1:
-        return {
-            "batch_id": items_out[0]["batch_id"],
-            "job_id": items_out[0]["job_id"],
-            "items": items_out,
-        }
-    return {"items": items_out}
+        return schemas.IngestQueuedResponse(
+            batch_id=items_out[0]["batch_id"],
+            job_id=items_out[0]["job_id"],
+            items=[schemas.IngestQueuedItemResponse(**item) for item in items_out],
+        )
+    return schemas.IngestQueuedResponse(
+        items=[schemas.IngestQueuedItemResponse(**item) for item in items_out]
+    )
 
 
 @router.post("/tags/bulk-apply")

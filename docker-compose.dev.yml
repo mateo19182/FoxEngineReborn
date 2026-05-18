@@ -4,22 +4,29 @@
 
 services:
   api:
+    networks:
+      - foxengine
     volumes:
       - ./backend/src:/app/src
     command:
       - /bin/sh
       - -c
       - >-
-        cd /app && alembic upgrade head &&
+        cd /app && python /app/docker/wait-for-postgres.py &&
+        alembic upgrade head &&
         python -c 'from foxengine.bootstrap import ensure_procrastinate_schema; ensure_procrastinate_schema()' &&
         uvicorn foxengine.main:app --host 0.0.0.0 --port 8000
         --reload --reload-dir /app/src
 
   worker:
+    networks:
+      - foxengine
     volumes:
       - ./backend/src:/app/src
 
   web:
+    networks:
+      - foxengine
     image: node:22-bookworm
     working_dir: /w
     environment:

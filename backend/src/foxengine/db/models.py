@@ -11,6 +11,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import CITEXT, INET, JSONB, UUID
@@ -115,6 +116,9 @@ class Tag(Base):
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     breach_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    family_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tag_families.id", ondelete="SET NULL"), nullable=True
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -123,14 +127,27 @@ class Tag(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    family: Mapped["TagFamily | None"] = relationship(lazy="joined")
+
+
+class TagFamily(Base):
+    __tablename__ = "tag_families"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class Batch(Base):
     __tablename__ = "batches"
+    __table_args__ = (Index("ix_batches_source_sha256", "source_sha256"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     upload_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     accepted_rows: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     rejected_rows: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
@@ -167,6 +184,29 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SavedView(Base):
+    __tablename__ = "saved_views"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_saved_views_user_name"),
+        Index("ix_saved_views_user_id", "user_id"),
+        Index("ix_saved_views_updated_at", "updated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    dsl: Mapped[str] = mapped_column(Text, nullable=False)
+    view: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class IngestRejection(Base):

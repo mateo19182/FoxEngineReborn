@@ -4,11 +4,7 @@
 
 - more encryption?
 
-- integrate ultimateparser...
-
 - test data 
     - /mnt/data/stuff
-    - /mnt/data/hmm/ultimateparser
 
-- hash files to prevent dupes
-
+- allow deletes on batch?

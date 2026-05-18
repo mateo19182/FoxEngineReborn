@@ -52,3 +52,55 @@ export async function api<T>(
   }
   return data as T;
 }
+
+export type QueryView = "rows" | "related";
+
+export type TagFamily = {
+  id: string;
+  code: string;
+  created_at: string;
+};
+
+export type SavedView = {
+  id: string;
+  name: string;
+  dsl: string;
+  view: QueryView;
+  created_at: string;
+  updated_at: string;
+};
+
+export function listSavedViews() {
+  return api<SavedView[]>("/saved-views");
+}
+
+export function createSavedView(payload: { name: string; dsl: string; view: QueryView }) {
+  return api<SavedView>("/saved-views", { method: "POST", json: payload });
+}
+
+export function patchSavedView(
+  savedViewId: string,
+  payload: { name?: string; dsl?: string; view?: QueryView },
+) {
+  return api<SavedView>(`/saved-views/${savedViewId}`, { method: "PATCH", json: payload });
+}
+
+export function deleteSavedView(savedViewId: string) {
+  return api<{ status: string }>(`/saved-views/${savedViewId}`, { method: "DELETE" });
+}
+
+export function listTagFamilies() {
+  return api<TagFamily[]>("/tags/families");
+}
+
+export function createTagFamily(payload: { code: string }) {
+  return api<TagFamily>("/tags/families", { method: "POST", json: payload });
+}
+
+export function patchTagFamily(familyId: string, payload: { code: string }) {
+  return api<TagFamily>(`/tags/families/${familyId}`, { method: "PATCH", json: payload });
+}
+
+export function deleteTagFamily(familyId: string) {
+  return api<{ status: string }>(`/tags/families/${familyId}`, { method: "DELETE" });
+}

@@ -57,6 +57,29 @@ Set **`FOX_LLM_ENABLED=false`** to turn off NL entirely (Query UI hides **Natura
 
 Compose-only model download knobs: **`LLM_MODEL_URL`**, **`LLM_MODEL_FILE`**, **`LLM_N_GPU_LAYERS`** (use `server-cuda` image and `LLM_N_GPU_LAYERS` > 0 for GPU).
 
+## OpenAPI spec
+
+Generate the OpenAPI document from the FastAPI app:
+
+```bash
+cd backend
+uv run foxengine-openapi
+```
+
+If your environment does not already provide `FOX_MASTER_KEY`, pass one for the command:
+
+```bash
+cd backend
+FOX_MASTER_KEY="$(uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" uv run foxengine-openapi
+```
+
+This writes `docs/openapi.json` by default. You can pass a custom path:
+
+```bash
+cd backend
+uv run foxengine-openapi ../docs/openapi.local.json
+```
+
 ## License / scope
 
 Single-tenant, per-instance distribution — see `PLAN.md` for phases, API surface, and acceptance goals.

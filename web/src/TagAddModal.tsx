@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { api, getToken, onUnauthorized } from "./api";
 import { DocTip } from "./DocTip";
 import { Modal } from "./Modal";
+import { TagFamiliesModal } from "./TagFamiliesModal";
 
 type AddMode = "manual" | "bulk";
 
 type TagTaxonomy = {
-  types: { code: string; family: string }[];
-  families: { code: string; types: string[] }[];
+  families: { code: string }[];
 };
 
 type TagAddModalProps = {
@@ -19,8 +19,9 @@ type TagAddModalProps = {
 export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
   const [addMode, setAddMode] = useState<AddMode>("manual");
   const [name, setName] = useState("");
-  const [tagType, setTagType] = useState("");
+  const [tagFamily, setTagFamily] = useState("");
   const [taxonomy, setTaxonomy] = useState<TagTaxonomy | null>(null);
+  const [familiesModalOpen, setFamiliesModalOpen] = useState(false);
   const [bulkTags, setBulkTags] = useState("");
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
@@ -29,7 +30,7 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
   function reset() {
     setAddMode("manual");
     setName("");
-    setTagType("");
+    setTagFamily("");
     setBulkTags("");
     setBulkFile(null);
     setBulkMsg(null);
@@ -54,7 +55,10 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
     try {
       await api("/tags", {
         method: "POST",
-        json: { name, ...(tagType ? { type: tagType } : {}) },
+        json: {
+          name,
+          ...(tagFamily ? { family: tagFamily } : {}),
+        },
       });
       await onCreated();
       handleClose();
@@ -138,22 +142,29 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
         <form onSubmit={createManual}>
           <div className="field">
             <label htmlFor="tag-name">Name</label>
-            <input id="tag-name" value={name} onChange={(e) => setName(e.target.value)} required />
+            <input id="tag-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tag name" required />
           </div>
           <div className="field">
-            <label htmlFor="tag-type">Type</label>
-            <select id="tag-type" value={tagType} onChange={(e) => setTagType(e.target.value)}>
+            <div className="label-row">
+              <label htmlFor="tag-family">Family</label>
+              <button type="button" className="link-btn" onClick={() => setFamiliesModalOpen(true)}>
+                Manage families
+              </button>
+            </div>
+            <select id="tag-family" value={tagFamily} onChange={(e) => setTagFamily(e.target.value)}>
               <option value="">None</option>
-              {taxonomy?.types.map((row) => (
+              {taxonomy?.families.map((row) => (
                 <option key={row.code} value={row.code}>
-                  {row.code} ({row.family})
+                  {row.code}
                 </option>
               ))}
             </select>
-            {!taxonomy ? <p className="hint" style={{ marginTop: "0.35rem" }}>Taxonomy unavailable.</p> : null}
+            <p className="hint" style={{ marginTop: "0.35rem" }}>
+              Use a family to filter later with <code>tag.family:{tagFamily || "YOUR_FAMILY"}</code>.
+            </p>
           </div>
           <div className="btn-row">
-            <button type="submit">Create</button>
+            <button type="submit">Create tag</button>
             <button type="button" className="secondary" onClick={handleClose}>
               Cancel
             </button>
@@ -192,6 +203,17 @@ export function TagAddModal({ open, onClose, onCreated }: TagAddModalProps) {
           {bulkMsg ? <p className="hint">{bulkMsg}</p> : null}
         </>
       )}
+      <TagFamiliesModal
+        open={familiesModalOpen}
+        onClose={() => setFamiliesModalOpen(false)}
+        onChanged={async () => {
+          const refreshed = await api<TagTaxonomy>("/tags/taxonomy");
+          setTaxonomy(refreshed);
+          if (tagFamily && !refreshed.families.some((row) => row.code === tagFamily)) {
+            setTagFamily("");
+          }
+        }}
+      />
     </Modal>
   );
 }
