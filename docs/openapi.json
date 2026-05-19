@@ -256,6 +256,127 @@
         "title": "AuditLogListResponse",
         "type": "object"
       },
+      "BatchAdminOut": {
+        "properties": {
+          "accepted_rows": {
+            "title": "Accepted Rows",
+            "type": "integer"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "duplicate_rows": {
+            "title": "Duplicate Rows",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ingest_ts": {
+            "title": "Ingest Ts",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "rejected_rows": {
+            "title": "Rejected Rows",
+            "type": "integer"
+          },
+          "source_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Filename"
+          },
+          "source_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Sha256"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "source_filename",
+          "accepted_rows",
+          "rejected_rows",
+          "duplicate_rows",
+          "ingest_ts"
+        ],
+        "title": "BatchAdminOut",
+        "type": "object"
+      },
+      "BatchDeletePreview": {
+        "properties": {
+          "already_deleted": {
+            "default": false,
+            "title": "Already Deleted",
+            "type": "boolean"
+          },
+          "batch": {
+            "$ref": "#/components/schemas/BatchAdminOut"
+          },
+          "clickhouse_rows": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Clickhouse Rows",
+            "type": "object"
+          },
+          "reingest_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reingest Warning"
+          },
+          "tag_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tag Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "batch"
+        ],
+        "title": "BatchDeletePreview",
+        "type": "object"
+      },
       "BatchOut": {
         "properties": {
           "accepted_rows": {
@@ -555,6 +676,287 @@
           }
         },
         "title": "IndexRequest",
+        "type": "object"
+      },
+      "IngestDuplicateMatch": {
+        "properties": {
+          "existing_batch_id": {
+            "title": "Existing Batch Id",
+            "type": "string"
+          },
+          "existing_batch_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Batch Name"
+          },
+          "existing_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Filename"
+          },
+          "ingest_ts": {
+            "title": "Ingest Ts",
+            "type": "string"
+          },
+          "source_sha256": {
+            "title": "Source Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_sha256",
+          "existing_batch_id",
+          "ingest_ts"
+        ],
+        "title": "IngestDuplicateMatch",
+        "type": "object"
+      },
+      "IngestPreviewFile": {
+        "properties": {
+          "column_guesses": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Column Guesses"
+          },
+          "csv_delimiter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csv Delimiter"
+          },
+          "duplicate_match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestDuplicateMatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "format_confidence": {
+            "title": "Format Confidence",
+            "type": "number"
+          },
+          "headers": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headers"
+          },
+          "inner_name": {
+            "title": "Inner Name",
+            "type": "string"
+          },
+          "recommended_column_map": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Column Map"
+          },
+          "sample_rows": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Sample Rows",
+            "type": "array"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "inner_name",
+          "format",
+          "format_confidence",
+          "size"
+        ],
+        "title": "IngestPreviewFile",
+        "type": "object"
+      },
+      "IngestPreviewResponse": {
+        "properties": {
+          "canonical_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Canonical Fields",
+            "type": "array"
+          },
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/IngestPreviewFile"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "merge_archive": {
+            "title": "Merge Archive",
+            "type": "boolean"
+          },
+          "outer_filename": {
+            "title": "Outer Filename",
+            "type": "string"
+          },
+          "upload_id": {
+            "title": "Upload Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "outer_filename",
+          "merge_archive",
+          "file_count",
+          "canonical_fields",
+          "files"
+        ],
+        "title": "IngestPreviewResponse",
+        "type": "object"
+      },
+      "IngestQueuedItemResponse": {
+        "properties": {
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "detect_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detect Confidence"
+          },
+          "duplicate_match": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IngestDuplicateMatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "inner_name": {
+            "title": "Inner Name",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "batch_id",
+          "job_id",
+          "inner_name",
+          "format"
+        ],
+        "title": "IngestQueuedItemResponse",
+        "type": "object"
+      },
+      "IngestQueuedResponse": {
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IngestQueuedItemResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "IngestQueuedResponse",
         "type": "object"
       },
       "IngestQueuedUploadRequest": {
@@ -965,6 +1367,124 @@
         "title": "QueryRequest",
         "type": "object"
       },
+      "SavedViewCreateRequest": {
+        "properties": {
+          "dsl": {
+            "minLength": 1,
+            "title": "Dsl",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "view": {
+            "default": "rows",
+            "enum": [
+              "rows",
+              "related"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "dsl"
+        ],
+        "title": "SavedViewCreateRequest",
+        "type": "object"
+      },
+      "SavedViewOut": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "dsl": {
+            "title": "Dsl",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "view": {
+            "enum": [
+              "rows",
+              "related"
+            ],
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "dsl",
+          "view",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SavedViewOut",
+        "type": "object"
+      },
+      "SavedViewPatchRequest": {
+        "properties": {
+          "dsl": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dsl"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "rows",
+                  "related"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "View"
+          }
+        },
+        "title": "SavedViewPatchRequest",
+        "type": "object"
+      },
       "SetupCompleteRequest": {
         "properties": {
           "password": {
@@ -1188,6 +1708,17 @@
             ],
             "title": "Breach Date"
           },
+          "family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family"
+          },
           "name": {
             "maxLength": 512,
             "minLength": 1,
@@ -1215,23 +1746,65 @@
               }
             ],
             "title": "Source Url"
-          },
-          "type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Type"
           }
         },
         "required": [
           "name"
         ],
         "title": "TagCreate",
+        "type": "object"
+      },
+      "TagFamilyCreate": {
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "TagFamilyCreate",
+        "type": "object"
+      },
+      "TagFamilyOut": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "created_at"
+        ],
+        "title": "TagFamilyOut",
+        "type": "object"
+      },
+      "TagFamilyPatch": {
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "TagFamilyPatch",
         "type": "object"
       },
       "TagOut": {
@@ -1291,17 +1864,6 @@
               }
             ],
             "title": "Source Url"
-          },
-          "type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Type"
           }
         },
         "required": [
@@ -1309,7 +1871,6 @@
           "name",
           "source_url",
           "breach_date",
-          "type",
           "family",
           "notes",
           "created_at"
@@ -1329,6 +1890,17 @@
               }
             ],
             "title": "Breach Date"
+          },
+          "family": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family"
           },
           "name": {
             "anyOf": [
@@ -1364,17 +1936,6 @@
               }
             ],
             "title": "Source Url"
-          },
-          "type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Type"
           }
         },
         "title": "TagPatch",
@@ -1385,18 +1946,10 @@
           "code": {
             "title": "Code",
             "type": "string"
-          },
-          "types": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Types",
-            "type": "array"
           }
         },
         "required": [
-          "code",
-          "types"
+          "code"
         ],
         "title": "TagTaxonomyFamilyItem",
         "type": "object"
@@ -1409,38 +1962,12 @@
             },
             "title": "Families",
             "type": "array"
-          },
-          "types": {
-            "items": {
-              "$ref": "#/components/schemas/TagTaxonomyTypeItem"
-            },
-            "title": "Types",
-            "type": "array"
           }
         },
         "required": [
-          "types",
           "families"
         ],
         "title": "TagTaxonomyOut",
-        "type": "object"
-      },
-      "TagTaxonomyTypeItem": {
-        "properties": {
-          "code": {
-            "title": "Code",
-            "type": "string"
-          },
-          "family": {
-            "title": "Family",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "family"
-        ],
-        "title": "TagTaxonomyTypeItem",
         "type": "object"
       },
       "UploadBrowseEntry": {
@@ -2273,6 +2800,16 @@
         "operationId": "list_batches_api_batches_get",
         "parameters": [
           {
+            "in": "query",
+            "name": "include_deleted",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Deleted",
+              "type": "boolean"
+            }
+          },
+          {
             "in": "header",
             "name": "authorization",
             "required": false,
@@ -2319,6 +2856,64 @@
       }
     },
     "/api/batches/{batch_id}": {
+      "delete": {
+        "operationId": "soft_delete_batch_api_batches__batch_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Batch Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Soft Delete Batch Api Batches  Batch Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Soft Delete Batch"
+      },
       "get": {
         "operationId": "get_batch_api_batches__batch_id__get",
         "parameters": [
@@ -2372,6 +2967,62 @@
           }
         },
         "summary": "Get Batch"
+      }
+    },
+    "/api/batches/{batch_id}/delete-preview": {
+      "get": {
+        "operationId": "batch_delete_preview_api_batches__batch_id__delete_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Batch Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchDeletePreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Batch Delete Preview"
       }
     },
     "/api/batches/{batch_id}/rejections.csv": {
@@ -2602,9 +3253,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Ingest File Api Ingest File Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/IngestQueuedResponse"
                 }
               }
             },
@@ -2660,9 +3309,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Ingest File From Upload Api Ingest File From Upload Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/IngestQueuedResponse"
                 }
               }
             },
@@ -2718,9 +3365,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Ingest Preview Api Ingest Preview Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/IngestPreviewResponse"
                 }
               }
             },
@@ -3068,6 +3713,234 @@
           }
         },
         "summary": "Translate Query Nl"
+      }
+    },
+    "/api/saved-views": {
+      "get": {
+        "operationId": "list_saved_views_api_saved_views_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SavedViewOut"
+                  },
+                  "title": "Response List Saved Views Api Saved Views Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Saved Views"
+      },
+      "post": {
+        "operationId": "create_saved_view_api_saved_views_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedViewCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Saved View"
+      }
+    },
+    "/api/saved-views/{saved_view_id}": {
+      "delete": {
+        "operationId": "delete_saved_view_api_saved_views__saved_view_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "saved_view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Saved View Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Delete Saved View Api Saved Views  Saved View Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Saved View"
+      },
+      "patch": {
+        "operationId": "patch_saved_view_api_saved_views__saved_view_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "saved_view_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Saved View Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SavedViewPatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedViewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Saved View"
       }
     },
     "/api/setup/complete": {
@@ -3432,6 +4305,234 @@
           }
         },
         "summary": "Bulk Apply Tags"
+      }
+    },
+    "/api/tags/families": {
+      "get": {
+        "operationId": "list_tag_families_api_tags_families_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TagFamilyOut"
+                  },
+                  "title": "Response List Tag Families Api Tags Families Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tag Families"
+      },
+      "post": {
+        "operationId": "create_tag_family_api_tags_families_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagFamilyCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagFamilyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Tag Family"
+      }
+    },
+    "/api/tags/families/{family_id}": {
+      "delete": {
+        "operationId": "delete_tag_family_api_tags_families__family_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "family_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Family Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Delete Tag Family Api Tags Families  Family Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Tag Family"
+      },
+      "patch": {
+        "operationId": "patch_tag_family_api_tags_families__family_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "family_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Family Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TagFamilyPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TagFamilyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Tag Family"
       }
     },
     "/api/tags/taxonomy": {

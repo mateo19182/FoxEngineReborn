@@ -7,4 +7,4 @@
 - test data 
     - /mnt/data/stuff
 
-- allow deletes on batch?
+- ~~allow deletes on batch?~~ (soft-delete via Admin; no ClickHouse purge)

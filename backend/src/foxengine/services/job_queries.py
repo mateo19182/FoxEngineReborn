@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from foxengine.db.models import Batch
 from foxengine.dsl.parser import parse_dsl
 from foxengine.dsl.sql import compile_expr
+from foxengine.services.deleted_batches import deleted_batch_sql_clause
 from foxengine.services.tags_resolve import resolve_tag_predicates, walk_preds
 
 
@@ -20,18 +19,9 @@ async def compile_leads_where(
     preds = walk_preds(ast)
     tag_map = await resolve_tag_predicates(session, preds)
     cw = compile_expr(ast, tag_map)
-    deleted = (
-        await session.execute(select(Batch.id).where(Batch.deleted_at.is_not(None)))
-    ).scalars().all()
-    extra = ""
+    extra, extra_params = await deleted_batch_sql_clause(session)
     params = dict(cw.parameters)
-    if deleted:
-        parts: list[str] = []
-        for i, bid in enumerate(deleted):
-            k = f"bd_{i}"
-            params[k] = str(bid)
-            parts.append(f"toUUID({{{k}:String}})")
-        extra = " AND batch_id NOT IN (" + ", ".join(parts) + ")"
+    params.update(extra_params)
     return f"({cw.sql}){extra}", params
 
 

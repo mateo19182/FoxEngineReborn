@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { DateRange } from "react-day-picker";
-import { api } from "./api";
+import {
+  api,
+  batchDeletePreview,
+  listBatches,
+  softDeleteBatch,
+  type BatchAdmin,
+  type BatchDeletePreview,
+} from "./api";
 import { AuditDateRangeCalendar } from "./AuditDateRangeCalendar";
 import { DocTip } from "./DocTip";
 import { Modal } from "./Modal";
@@ -29,7 +36,7 @@ type AuditRow = {
 type Me = { id: string; username: string; roles: string[]; llm_nl_enabled?: boolean };
 type ApiKey = { id: string; name: string; created_at: string; last_used_at: string | null };
 
-type ModalKind = "createUser" | "changePassword" | "createApiKey" | null;
+type ModalKind = "createUser" | "changePassword" | "createApiKey" | "deleteBatch" | null;
 
 const AUDIT_PAGE = 40;
 
@@ -83,6 +90,11 @@ export function AdminPage() {
 
   const [keyName, setKeyName] = useState("");
   const [newKey, setNewKey] = useState<string | null>(null);
+
+  const [batches, setBatches] = useState<BatchAdmin[]>([]);
+  const [deletedBatches, setDeletedBatches] = useState<BatchAdmin[]>([]);
+  const [batchPreview, setBatchPreview] = useState<BatchDeletePreview | null>(null);
+  const [batchDeleteBusy, setBatchDeleteBusy] = useState(false);
 
   function auditQuerySummary(row: AuditRow): string | null {
     if (row.action === "query.nl_translate") {
@@ -232,11 +244,17 @@ export function AdminPage() {
     setKeys(k);
   }
 
+  async function loadBatches() {
+    const [active, deleted] = await Promise.all([listBatches(false), listBatches(true)]);
+    setBatches(active.filter((b) => !b.deleted_at));
+    setDeletedBatches(deleted.filter((b) => b.deleted_at));
+  }
+
   useEffect(() => {
     void (async () => {
       setErr(null);
       try {
-        await Promise.all([loadUsers(), loadAccount()]);
+        await Promise.all([loadUsers(), loadAccount(), loadBatches()]);
       } catch (e) {
         setErr(String(e));
       }
@@ -252,6 +270,7 @@ export function AdminPage() {
   function closeModal() {
     setModal(null);
     setErr(null);
+    setBatchPreview(null);
   }
 
   function openCreateUser() {
@@ -338,6 +357,34 @@ export function AdminPage() {
     }
   }
 
+  async function openDeleteBatch(batchId: string) {
+    setErr(null);
+    setBatchPreview(null);
+    setModal("deleteBatch");
+    try {
+      const preview = await batchDeletePreview(batchId);
+      setBatchPreview(preview);
+    } catch (ex) {
+      setErr(String(ex));
+    }
+  }
+
+  async function confirmDeleteBatch() {
+    if (!batchPreview) return;
+    setBatchDeleteBusy(true);
+    setErr(null);
+    try {
+      await softDeleteBatch(batchPreview.batch.id);
+      closeModal();
+      setBatchPreview(null);
+      await loadBatches();
+    } catch (ex) {
+      setErr(String(ex));
+    } finally {
+      setBatchDeleteBusy(false);
+    }
+  }
+
   return (
     <div>
       <header className="page-head">
@@ -418,6 +465,72 @@ export function AdminPage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel__head">
+          <h2>Ingest batches</h2>
+        </div>
+        <p className="hint" style={{ marginTop: 0 }}>
+          Soft-delete hides a batch from search and exports. Data stays in ClickHouse (no physical purge).
+        </p>
+        {batches.length === 0 ? (
+          <p className="hint">No active batches.</p>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>File</th>
+                  <th>Accepted</th>
+                  <th>Ingested</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {batches.map((b) => (
+                  <tr key={b.id}>
+                    <td>{b.name ?? b.id.slice(0, 8)}</td>
+                    <td>{b.source_filename ?? "—"}</td>
+                    <td>{b.accepted_rows}</td>
+                    <td className="muted">{b.ingest_ts}</td>
+                    <td>
+                      <button type="button" className="secondary" onClick={() => void openDeleteBatch(b.id)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {deletedBatches.length > 0 ? (
+          <>
+            <h3 style={{ marginTop: "1.25rem" }}>Deleted batches</h3>
+            <div style={{ overflowX: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>File</th>
+                    <th>Deleted</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {deletedBatches.map((b) => (
+                    <tr key={b.id}>
+                      <td>{b.name ?? b.id.slice(0, 8)}</td>
+                      <td>{b.source_filename ?? "—"}</td>
+                      <td className="muted">{b.deleted_at}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : null}
       </section>
 
       <section className="panel">
@@ -644,6 +757,64 @@ export function AdminPage() {
               </button>
             </div>
           </form>
+        )}
+      </Modal>
+
+      <Modal open={modal === "deleteBatch"} title="Delete ingest batch" onClose={closeModal} wide>
+        {err ? <p className="error">{err}</p> : null}
+        {!batchPreview ? (
+          <p className="hint">Loading preview…</p>
+        ) : (
+          <>
+            <p className="hint" style={{ marginTop: 0 }}>
+              <strong>{batchPreview.batch.name ?? batchPreview.batch.id}</strong>
+              {batchPreview.batch.source_filename ? (
+                <span className="muted"> — {batchPreview.batch.source_filename}</span>
+              ) : null}
+            </p>
+            <table>
+              <tbody>
+                <tr>
+                  <td className="muted">Accepted rows (metadata)</td>
+                  <td>{batchPreview.batch.accepted_rows}</td>
+                </tr>
+                <tr>
+                  <td className="muted">ClickHouse leads</td>
+                  <td>{batchPreview.clickhouse_rows.leads ?? 0}</td>
+                </tr>
+                <tr>
+                  <td className="muted">ClickHouse identities</td>
+                  <td>{batchPreview.clickhouse_rows.lead_identities ?? 0}</td>
+                </tr>
+                <tr>
+                  <td className="muted">ClickHouse tag links</td>
+                  <td>{batchPreview.clickhouse_rows.lead_tags ?? 0}</td>
+                </tr>
+              </tbody>
+            </table>
+            {batchPreview.tag_names.length > 0 ? (
+              <p className="hint">
+                Tags on batch: <span className="mono">{batchPreview.tag_names.join(", ")}</span>
+              </p>
+            ) : null}
+            {batchPreview.reingest_warning ? (
+              <p className="error" style={{ marginBottom: 0 }}>
+                {batchPreview.reingest_warning}
+              </p>
+            ) : null}
+            {batchPreview.already_deleted ? (
+              <p className="hint">This batch is already soft-deleted.</p>
+            ) : (
+              <div className="btn-row">
+                <button type="button" disabled={batchDeleteBusy} onClick={() => void confirmDeleteBatch()}>
+                  {batchDeleteBusy ? "Deleting…" : "Confirm delete"}
+                </button>
+                <button type="button" className="secondary" onClick={closeModal}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </>
         )}
       </Modal>
     </div>

@@ -45,6 +45,7 @@ from foxengine.services.format_detect import (
     detect_for_ingest,
 )
 from foxengine.services.ingest import ingest_sync
+from foxengine.services.deleted_batches import batch_clickhouse_counts, deleted_batch_sql_clause
 from foxengine.services.job_queries import compile_leads_where, leads_select_sql
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, llm_health_status
 from foxengine.services.nl_to_dsl import translate_nl_to_dsl
@@ -747,12 +748,16 @@ async def run_query(
             }
         )
         s = get_settings()
+        deleted_extra, deleted_params = await deleted_batch_sql_clause(session)
         related_where_sql = (
+            "("
             "has({rel_emails:Array(String)}, email_norm) "
             "OR has({rel_phones:Array(String)}, phone_norm) "
             "OR has({rel_usernames:Array(String)}, lower(username)) "
-            "OR has({rel_id_cards:Array(String)}, id_card) "
+            "OR has({rel_id_cards:Array(String)}, id_card)"
+            f"){deleted_extra}"
         )
+        related_params.update(deleted_params)
         related_sql = leads_select_sql(related_where_sql, limit=s.related_rows_cap)
         related_settings_ch = {**settings_ch, "max_result_rows": int(s.related_rows_cap)}
         related_qr = await ch.query(
@@ -1424,12 +1429,35 @@ async def storage_presign(
     return schemas.StoragePresignResponse(url=url)
 
 
-@router.get("/batches", response_model=list[schemas.BatchOut])
-async def list_batches(session: SessionDep, _: ViewerDep) -> list[schemas.BatchOut]:
-    res = await session.execute(
-        select(Batch).where(Batch.deleted_at.is_(None)).order_by(Batch.ingest_ts.desc()).limit(200)
+def _batch_admin_out(b: Batch) -> schemas.BatchAdminOut:
+    return schemas.BatchAdminOut(
+        id=str(b.id),
+        name=b.name,
+        source_filename=b.source_filename,
+        accepted_rows=int(b.accepted_rows),
+        rejected_rows=int(b.rejected_rows),
+        duplicate_rows=int(b.duplicate_rows),
+        ingest_ts=b.ingest_ts.isoformat(),
+        source_sha256=b.source_sha256,
+        deleted_at=b.deleted_at.isoformat() if b.deleted_at is not None else None,
     )
+
+
+@router.get("/batches", response_model=list[schemas.BatchOut])
+async def list_batches(
+    session: SessionDep,
+    principal: ViewerDep,
+    include_deleted: bool = Query(False),
+) -> list[schemas.BatchOut]:
+    if include_deleted and "admin" not in principal.roles:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "insufficient role")
+    q = select(Batch).order_by(Batch.ingest_ts.desc()).limit(200)
+    if not include_deleted:
+        q = q.where(Batch.deleted_at.is_(None))
+    res = await session.execute(q)
     rows = res.scalars().all()
+    if include_deleted:
+        return [_batch_admin_out(b) for b in rows]
     return [
         schemas.BatchOut(
             id=str(b.id),
@@ -1463,6 +1491,61 @@ async def get_batch(batch_id: UUID, session: SessionDep, _: ViewerDep) -> schema
     )
 
 
+@router.get("/batches/{batch_id}/delete-preview", response_model=schemas.BatchDeletePreview)
+async def batch_delete_preview(
+    batch_id: UUID,
+    session: SessionDep,
+    _: AdminDep,
+) -> schemas.BatchDeletePreview:
+    res = await session.execute(select(Batch).where(Batch.id == batch_id))
+    b = res.scalar_one_or_none()
+    if b is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    ch = await get_ch_client()
+    ch_counts = await batch_clickhouse_counts(ch, batch_id)
+    tag_names = await _tag_names_for_batch(session, batch_id)
+    already_deleted = b.deleted_at is not None
+    reingest_warning: str | None = None
+    if ch_counts.get("leads", 0) > 0:
+        reingest_warning = (
+            "Lead rows remain in ClickHouse. After soft-delete they are hidden from search, "
+            "but re-ingesting the same file can duplicate data until those rows are removed."
+        )
+    return schemas.BatchDeletePreview(
+        batch=_batch_admin_out(b),
+        tag_names=tag_names,
+        clickhouse_rows=ch_counts,
+        already_deleted=already_deleted,
+        reingest_warning=reingest_warning,
+    )
+
+
+@router.delete("/batches/{batch_id}")
+async def soft_delete_batch(
+    request: Request,
+    batch_id: UUID,
+    session: SessionDep,
+    principal: AdminDep,
+) -> dict[str, str]:
+    res = await session.execute(select(Batch).where(Batch.id == batch_id))
+    b = res.scalar_one_or_none()
+    if b is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    if b.deleted_at is None:
+        await session.execute(
+            update(Batch).where(Batch.id == batch_id).values(deleted_at=datetime.now(UTC))
+        )
+        await session.commit()
+        _audit(
+            request,
+            principal,
+            "batch.soft_delete",
+            target_kind="batch",
+            target_id=str(batch_id),
+        )
+    return {"status": "ok"}
+
+
 @router.get("/batches/{batch_id}/rejections.csv")
 async def batch_rejections_csv(
     batch_id: UUID,
@@ -1470,6 +1553,12 @@ async def batch_rejections_csv(
     _: ViewerDep,
 ) -> StreamingResponse:
     import csv as csv_mod
+
+    batch = await session.scalar(
+        select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
+    )
+    if batch is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
 
     res = await session.execute(
         select(IngestRejection)

@@ -388,6 +388,19 @@ class BatchOut(BaseModel):
     ingest_ts: str
 
 
+class BatchAdminOut(BatchOut):
+    source_sha256: str | None = None
+    deleted_at: str | None = None
+
+
+class BatchDeletePreview(BaseModel):
+    batch: BatchAdminOut
+    tag_names: list[str] = Field(default_factory=list)
+    clickhouse_rows: dict[str, int] = Field(default_factory=dict)
+    already_deleted: bool = False
+    reingest_warning: str | None = None
+
+
 class UploadBrowseEntry(BaseModel):
     key: str
     is_directory: bool

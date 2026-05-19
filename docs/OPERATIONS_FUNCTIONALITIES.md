@@ -108,6 +108,7 @@ Export runtime behavior:
 
 - Jobs list/detail endpoints with ownership checks
 - Batch list/detail endpoints
+- Admin batch soft-delete: preview (`GET /api/batches/{id}/delete-preview`) and delete (`DELETE /api/batches/{id}`) — hides batch from search/export; ClickHouse rows are retained (no physical purge)
 - Download endpoints:
   - `/api/jobs/{id}/download` for completed artifacts
   - `/api/batches/{id}/rejections.csv` for ingest rejects
@@ -142,6 +143,7 @@ Admin capabilities:
 
 - create users (viewer/manager)
 - manage API keys
+- soft-delete ingest batches (with delete preview)
 - inspect audit log with filters (action, actor, date range)
 
 Audit captures auth, query, ingestion, export, and key events with actor metadata and request context.

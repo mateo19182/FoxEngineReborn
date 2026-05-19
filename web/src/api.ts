@@ -104,3 +104,36 @@ export function patchTagFamily(familyId: string, payload: { code: string }) {
 export function deleteTagFamily(familyId: string) {
   return api<{ status: string }>(`/tags/families/${familyId}`, { method: "DELETE" });
 }
+
+export type BatchAdmin = {
+  id: string;
+  name: string | null;
+  source_filename: string | null;
+  accepted_rows: number;
+  rejected_rows: number;
+  duplicate_rows: number;
+  ingest_ts: string;
+  source_sha256?: string | null;
+  deleted_at?: string | null;
+};
+
+export type BatchDeletePreview = {
+  batch: BatchAdmin;
+  tag_names: string[];
+  clickhouse_rows: Record<string, number>;
+  already_deleted: boolean;
+  reingest_warning: string | null;
+};
+
+export function listBatches(includeDeleted = false) {
+  const q = includeDeleted ? "?include_deleted=true" : "";
+  return api<BatchAdmin[]>(`/batches${q}`);
+}
+
+export function batchDeletePreview(batchId: string) {
+  return api<BatchDeletePreview>(`/batches/${batchId}/delete-preview`);
+}
+
+export function softDeleteBatch(batchId: string) {
+  return api<{ status: string }>(`/batches/${batchId}`, { method: "DELETE" });
+}
