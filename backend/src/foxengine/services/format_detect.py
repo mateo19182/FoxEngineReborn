@@ -11,7 +11,10 @@ from typing import Any, Literal
 
 from foxengine.dsl.fields import INGEST_CANONICAL_FIELDS
 
-FormatName = Literal["jsonl", "csv", "combo"]
+FormatName = Literal["jsonl", "csv", "combo", "txt"]
+
+LINE_VALUE_HEADER = "$value"
+_PREVIEW_OBJECT_LIMIT = 12
 
 CANONICAL_FIELDS = INGEST_CANONICAL_FIELDS
 CANONICAL = frozenset(CANONICAL_FIELDS)
@@ -241,29 +244,85 @@ def _sniff_jsonl(lines: list[str]) -> tuple[bool, float]:
     return ratio >= 0.72, ratio
 
 
-def _sniff_csv(text: str) -> tuple[str | None, list[str] | None, float]:
+_CSV_DELIMITER_CANDIDATES = ",;\t|"
+
+
+def is_delimited_text_filename(inner_filename: str) -> bool:
+    lower = inner_filename.lower()
+    return lower.endswith((".csv", ".txt", ".tsv"))
+
+
+def _score_csv_delimiter(text: str, delim: str) -> tuple[list[str] | None, float]:
     sample = text[:50_000]
     if not sample.strip():
-        return None, None, 0.0
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-    except csv.Error:
-        return None, None, 0.0
-    delim = dialect.delimiter
+        return None, 0.0
     reader = csv.reader(io.StringIO(sample), delimiter=delim)
     rows = list(reader)
     if not rows:
-        return delim, None, 0.0
+        return None, 0.0
     header = [h.strip() for h in rows[0]]
     if not any(header):
-        return delim, None, 0.3
+        return None, 0.3
     body_rows = rows[1:6]
     score = 0.55
     if len(header) >= 2:
         score = 0.75
     if all(len(r) == len(header) for r in body_rows if r):
         score = min(0.95, score + 0.15)
-    return delim, header, score
+    return header, score
+
+
+def _sniff_csv(text: str) -> tuple[str | None, list[str] | None, float]:
+    sample = text[:50_000]
+    if not sample.strip():
+        return None, None, 0.0
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=_CSV_DELIMITER_CANDIDATES)
+        delim = dialect.delimiter
+        headers, score = _score_csv_delimiter(text, delim)
+        return delim, headers, score
+    except csv.Error:
+        pass
+    best_delim: str | None = None
+    best_headers: list[str] | None = None
+    best_score = 0.0
+    for delim in _CSV_DELIMITER_CANDIDATES:
+        headers, score = _score_csv_delimiter(text, delim)
+        if score > best_score:
+            best_delim, best_headers, best_score = delim, headers, score
+    if best_score < 0.55:
+        return None, None, 0.0
+    return best_delim, best_headers, best_score
+
+
+def _detect_result_for_csv(text: str, delim: str) -> DetectResult:
+    headers, csv_c = _score_csv_delimiter(text, delim)
+    if not headers:
+        return DetectResult(
+            format="csv",
+            format_confidence=0.35,
+            csv_delimiter=delim,
+            headers=None,
+            column_guesses={},
+            recommended_column_map={},
+            sample_rows=[],
+        )
+    col_guess: dict[str, list[dict[str, Any]]] = {}
+    for h in headers:
+        if not h:
+            continue
+        ranked = score_header(h)
+        col_guess[h] = [{"field": f, "confidence": c} for f, c in ranked[:3]]
+    rec = _build_recommended_map(headers)
+    return DetectResult(
+        format="csv",
+        format_confidence=max(csv_c, 0.6),
+        csv_delimiter=delim,
+        headers=headers,
+        column_guesses=col_guess,
+        recommended_column_map=rec,
+        sample_rows=_sample_csv_rows(text, delim, headers),
+    )
 
 
 @dataclass
@@ -318,9 +377,11 @@ def _sample_csv_rows(
     return out
 
 
-def _sample_jsonl_rows(lines: list[str], n: int = 10) -> list[dict[str, str]]:
+def _sample_jsonl_rows(lines: list[str], n: int = _PREVIEW_OBJECT_LIMIT) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
-    for line in lines[:n]:
+    for line in lines:
+        if len(out) >= n:
+            break
         try:
             v = json.loads(line)
         except json.JSONDecodeError:
@@ -330,30 +391,142 @@ def _sample_jsonl_rows(lines: list[str], n: int = 10) -> list[dict[str, str]]:
     return out
 
 
-def analyze_text_payload(inner_filename: str, data: bytes) -> DetectResult:
+def _headers_from_objects(objects: list[dict[str, Any]], limit: int = 40) -> list[str]:
+    seen: set[str] = set()
+    headers: list[str] = []
+    for obj in objects:
+        for key in obj:
+            sk = str(key)
+            if sk in seen:
+                continue
+            seen.add(sk)
+            headers.append(sk)
+            if len(headers) >= limit:
+                return headers
+    return headers
+
+
+def _column_guesses_for_headers(headers: list[str]) -> dict[str, list[dict[str, Any]]]:
+    col_guess: dict[str, list[dict[str, Any]]] = {}
+    for h in headers:
+        if not h:
+            continue
+        ranked = score_header(h)
+        col_guess[h] = [{"field": f, "confidence": c} for f, c in ranked[:3]]
+    return col_guess
+
+
+def _detect_jsonl_result(
+    lines: list[str],
+    *,
+    format_confidence: float,
+    key_guess_mode: Literal["identity", "score"] = "score",
+) -> DetectResult:
+    guesses: dict[str, list[dict[str, Any]]] = {}
+    headers: list[str] = []
+    sample_rows = _sample_jsonl_rows(lines)
+    if sample_rows:
+        headers = list(sample_rows[0].keys())[:40]
+        if key_guess_mode == "identity":
+            for k in headers:
+                guesses[k] = [{"field": k, "confidence": 1.0}]
+        else:
+            guesses = _column_guesses_for_headers(headers)
+    recommended = _build_recommended_map(headers) if headers else {}
+    return DetectResult(
+        format="jsonl",
+        format_confidence=format_confidence,
+        csv_delimiter=None,
+        headers=headers or None,
+        column_guesses=guesses,
+        recommended_column_map=recommended,
+        sample_rows=sample_rows,
+    )
+
+
+def _detect_txt_result(lines: list[str], *, format_confidence: float) -> DetectResult:
+    sample_rows = [{LINE_VALUE_HEADER: ln} for ln in lines[:_PREVIEW_OBJECT_LIMIT]]
+    return DetectResult(
+        format="txt",
+        format_confidence=format_confidence,
+        csv_delimiter=None,
+        headers=[LINE_VALUE_HEADER],
+        column_guesses={},
+        recommended_column_map={},
+        sample_rows=sample_rows,
+    )
+
+
+def _parse_json_document_objects(data: bytes) -> list[dict[str, Any]] | None:
+    text = data.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        return [x for x in parsed if isinstance(x, dict)][: _PREVIEW_OBJECT_LIMIT * 4]
+    return None
+
+
+def _detect_json_document_result(data: bytes) -> DetectResult | None:
+    objects = _parse_json_document_objects(data)
+    if not objects:
+        return None
+    sample_objects = objects[:_PREVIEW_OBJECT_LIMIT]
+    headers = _headers_from_objects(sample_objects)
+    sample_rows = [
+        {str(k): str(val) for k, val in obj.items()} for obj in sample_objects
+    ]
+    return DetectResult(
+        format="jsonl",
+        format_confidence=0.9,
+        csv_delimiter=None,
+        headers=headers or None,
+        column_guesses=_column_guesses_for_headers(headers),
+        recommended_column_map=_build_recommended_map(headers) if headers else {},
+        sample_rows=sample_rows,
+    )
+
+
+def analyze_text_payload(
+    inner_filename: str,
+    data: bytes,
+    *,
+    csv_delimiter: str | None = None,
+) -> DetectResult:
     text = data.decode("utf-8", errors="replace")
     lines = _sample_lines(text)
     lower = inner_filename.lower()
 
+    if csv_delimiter is not None:
+        delim = csv_delimiter if len(csv_delimiter) == 1 else ","
+        if is_delimited_text_filename(inner_filename):
+            return _detect_result_for_csv(text, delim)
+
+    if lower.endswith(".json"):
+        doc = _detect_json_document_result(data)
+        if doc is not None:
+            return doc
+        j_ok, j_ratio = _sniff_jsonl(lines)
+        return _detect_jsonl_result(
+            lines,
+            format_confidence=max(j_ratio, 0.5) if j_ok else 0.35,
+            key_guess_mode="score",
+        )
+
+    if lower.endswith(".txt"):
+        return _detect_txt_result(lines, format_confidence=0.85)
+
     if lower.endswith(".jsonl") or lower.endswith(".ndjson"):
         j_ok, j_ratio = _sniff_jsonl(lines)
-        guesses: dict[str, list[dict[str, Any]]] = {}
-        if lines and j_ok:
-            try:
-                first = json.loads(lines[0])
-                if isinstance(first, dict):
-                    for k in list(first.keys())[:40]:
-                        guesses[str(k)] = [{"field": str(k), "confidence": 1.0}]
-            except json.JSONDecodeError:
-                pass
-        return DetectResult(
-            format="jsonl",
+        return _detect_jsonl_result(
+            lines,
             format_confidence=max(j_ratio, 0.85),
-            csv_delimiter=None,
-            headers=None,
-            column_guesses=guesses,
-            recommended_column_map={},
-            sample_rows=_sample_jsonl_rows(lines),
+            key_guess_mode="identity",
         )
 
     is_combo, combo_ratio = _sniff_combo(lines)
@@ -370,7 +543,7 @@ def analyze_text_payload(inner_filename: str, data: bytes) -> DetectResult:
             recommended_column_map={},
             sample_rows=[
                 {"email": ln.split(":", 1)[0], "password": ln.split(":", 1)[1]}
-                for ln in lines[:12]
+                for ln in lines[:_PREVIEW_OBJECT_LIMIT]
                 if ":" in ln
             ],
         )
@@ -379,55 +552,16 @@ def analyze_text_payload(inner_filename: str, data: bytes) -> DetectResult:
     delim, headers, csv_c = _sniff_csv(text)
 
     if j_ok and j_ratio >= (csv_c or 0) and j_ratio >= 0.72:
-        guesses: dict[str, list[dict[str, Any]]] = {}
-        if lines:
-            try:
-                first = json.loads(lines[0])
-                if isinstance(first, dict):
-                    for k in list(first.keys())[:40]:
-                        sk = str(k)
-                        ranked = [(f, c) for f, c in score_header(sk)]
-                        guesses[sk] = [{"field": f, "confidence": c} for f, c in ranked[:3]]
-            except json.JSONDecodeError:
-                pass
-        return DetectResult(
-            format="jsonl",
-            format_confidence=j_ratio,
-            csv_delimiter=None,
-            headers=None,
-            column_guesses=guesses,
-            recommended_column_map={},
-            sample_rows=_sample_jsonl_rows(lines),
-        )
+        return _detect_jsonl_result(lines, format_confidence=j_ratio)
 
     if delim and headers:
-        col_guess: dict[str, list[dict[str, Any]]] = {}
-        for h in headers:
-            if not h:
-                continue
-            ranked = score_header(h)
-            col_guess[h] = [{"field": f, "confidence": c} for f, c in ranked[:3]]
-        rec = _build_recommended_map(headers)
-        return DetectResult(
-            format="csv",
-            format_confidence=max(csv_c, 0.6),
-            csv_delimiter=delim,
-            headers=headers,
-            column_guesses=col_guess,
-            recommended_column_map=rec,
-            sample_rows=_sample_csv_rows(text, delim, headers),
-        )
+        return _detect_result_for_csv(text, delim)
 
     if j_ok:
-        return DetectResult(
-            format="jsonl",
-            format_confidence=j_ratio,
-            csv_delimiter=None,
-            headers=None,
-            column_guesses={},
-            recommended_column_map={},
-            sample_rows=_sample_jsonl_rows(lines),
-        )
+        return _detect_jsonl_result(lines, format_confidence=j_ratio)
+
+    if lines:
+        return _detect_txt_result(lines, format_confidence=0.55)
 
     return DetectResult(
         format="csv",
@@ -457,7 +591,7 @@ def detect_for_ingest(
             "detect_confidence": d.format_confidence,
             "csv_delimiter": d.csv_delimiter or ",",
         }
-        if d.format == "csv":
+        if d.format in ("csv", "jsonl"):
             extras["column_map"] = dict(d.recommended_column_map)
         else:
             extras["column_map"] = {}
@@ -470,7 +604,9 @@ def detect_for_ingest(
         return "csv", extras
     if hint == "jsonl":
         extras["csv_delimiter"] = ","
-        extras["column_map"] = {}
+        extras["column_map"] = (
+            dict(d.recommended_column_map) if d.format == "jsonl" else {}
+        )
         return "jsonl", extras
     if hint == "combo":
         extras["csv_delimiter"] = ":"

@@ -10,3 +10,5 @@
 - ~~allow deletes on batch?~~ (admin delete + ClickHouse purge job)
 
 - graph view for merged...
+
+- sql / txt header mapping!

@@ -51,6 +51,10 @@ class Settings(BaseSettings):
 
     max_export_rows: int = 5_000_000
 
+    export_use_ch_s3: bool = True
+    export_batch_size: int = 50_000
+    export_s3_part_bytes: int = 8 * 1024 * 1024
+
     related_rows_cap: int = 1000
 
     llm_enabled: bool = True

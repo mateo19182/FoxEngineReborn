@@ -7,31 +7,66 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foxengine.dsl.parser import parse_dsl
-from foxengine.dsl.sql import compile_expr
+from foxengine.dsl.sql import CompiledLeadsQuery, compile_leads_query
 from foxengine.services.deleted_batches import deleted_batch_sql_clause
 from foxengine.services.tags_resolve import resolve_tag_predicates, walk_preds
 
 
-async def compile_leads_where(
-    session: AsyncSession, dsl: str
-) -> tuple[str, dict[str, Any]]:
+async def compile_leads_where(session: AsyncSession, dsl: str) -> CompiledLeadsQuery:
+    if not dsl.strip():
+        extra, extra_params = await deleted_batch_sql_clause(session)
+        return CompiledLeadsQuery(
+            leads_where=f"(1 = 1){extra}",
+            parameters=dict(extra_params),
+            tag_keys_select=None,
+        )
+
     ast = parse_dsl(dsl)
     preds = walk_preds(ast)
     tag_map = await resolve_tag_predicates(session, preds)
-    cw = compile_expr(ast, tag_map)
+    compiled = compile_leads_query(ast, tag_map)
     extra, extra_params = await deleted_batch_sql_clause(session)
-    params = dict(cw.parameters)
+    params = dict(compiled.parameters)
     params.update(extra_params)
-    return f"({cw.sql}){extra}", params
+    return CompiledLeadsQuery(
+        leads_where=f"({compiled.leads_where}){extra}",
+        parameters=params,
+        tag_keys_select=compiled.tag_keys_select,
+    )
 
 
-def leads_select_sql(where_sql: str, *, limit: int, offset: int = 0) -> str:
+def leads_count_sql(compiled: CompiledLeadsQuery) -> str:
+    if compiled.tag_keys_select:
+        return f"""
+SELECT count()
+FROM (
+    {compiled.tag_keys_select}
+) AS tagged
+INNER JOIN leads AS l USING (batch_id, row_in_batch)
+WHERE {compiled.leads_where}
+""".strip()
+    return f"SELECT count() FROM leads WHERE {compiled.leads_where}"
+
+
+def leads_select_sql(compiled: CompiledLeadsQuery, *, limit: int, offset: int = 0) -> str:
+    if compiled.tag_keys_select:
+        from_clause = f"""
+FROM (
+    {compiled.tag_keys_select}
+) AS tagged
+INNER JOIN leads AS l USING (batch_id, row_in_batch)
+""".strip()
+        leads_ref = "l"
+    else:
+        from_clause = "FROM leads AS l"
+        leads_ref = "l"
+
     return f"""
 WITH selected AS (
-    SELECT *
-    FROM leads
-    WHERE {where_sql}
-    ORDER BY ingest_ts DESC
+    SELECT {leads_ref}.*
+    {from_clause}
+    WHERE {compiled.leads_where}
+    ORDER BY {leads_ref}.ingest_ts DESC
     LIMIT {int(limit)} OFFSET {int(offset)}
 )
 SELECT

@@ -18,6 +18,7 @@ from foxengine.clickhouse import get_ch_client
 from foxengine.config import get_settings
 from foxengine.db.models import Batch, IngestRejection, Job
 from foxengine.db.session import get_session_factory
+from foxengine.services.format_detect import LINE_VALUE_HEADER
 from foxengine.services.ingest import resolve_tag_ids
 from foxengine.services.ingest_rows import (
     CH_IDENTITY_INSERT_COLUMNS,
@@ -26,6 +27,7 @@ from foxengine.services.ingest_rows import (
     RowOutcome,
     csv_row_to_raw,
     ingest_timestamp,
+    json_object_to_raw,
     materialize_identity_rows,
     materialize_lead_row,
     materialize_tag_rows,
@@ -33,6 +35,7 @@ from foxengine.services.ingest_rows import (
 
 log = logging.getLogger(__name__)
 CH_INGEST_FLUSH_ROWS = 50_000
+INGEST_PROGRESS_EVERY = 5_000
 S3_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
 
@@ -113,27 +116,110 @@ async def run_ingest_file_job(job_id: UUID) -> None:
             dup = 0
             rib = 0
             ts = ingest_timestamp()
+            last_reported = 0
+
+            async def report_progress_if_needed() -> None:
+                nonlocal last_reported
+                processed = accepted + rejected + dup
+                if processed == 0 or processed - last_reported < INGEST_PROGRESS_EVERY:
+                    return
+                last_reported = processed
+                async with factory() as progress_session:
+                    await progress_session.execute(
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(processed_rows=processed)
+                    )
+                    await progress_session.commit()
 
             async def flush_if_needed() -> None:
                 if len(ch_rows) >= CH_INGEST_FLUSH_ROWS:
                     await _flush_clickhouse_rows(ch, ch_rows, identity_rows, tag_rows)
 
+            async def ingest_json_object(
+                raw_obj: dict[str, Any],
+                line_no: int,
+            ) -> None:
+                nonlocal rib, accepted, dup, rejected
+                if column_map_s:
+                    mapped = json_object_to_raw(
+                        raw_obj,
+                        column_map_s,
+                        allow_known_field_fallback=not manual_column_map,
+                    )
+                else:
+                    mapped = raw_obj
+                rib, accepted, dup, rejected = _append_row(
+                    mapped,
+                    batch.id,
+                    rib,
+                    accepted,
+                    dup,
+                    rejected,
+                    line_no,
+                    tag_id_strs,
+                    seen_hashes,
+                    ts,
+                    default_region_s,
+                    ch_rows,
+                    identity_rows,
+                    tag_rows,
+                    rejections,
+                )
+                await flush_if_needed()
+                await report_progress_if_needed()
+
             if fmt == "jsonl":
+                text_file.seek(0)
+                head = text_file.read(4096).lstrip()
+                text_file.seek(0)
+                if head.startswith("["):
+                    try:
+                        parsed = json.load(text_file)
+                    except json.JSONDecodeError as e:
+                        async with factory() as session:
+                            await _fail_job(session, job_id, f"invalid json array: {e}")
+                        return
+                    if not isinstance(parsed, list):
+                        async with factory() as session:
+                            await _fail_job(session, job_id, "json root must be an array")
+                        return
+                    for i, item in enumerate(parsed):
+                        line_no = i + 1
+                        if not isinstance(item, dict):
+                            rejections.append((line_no, "json must be object", str(item)[:8000]))
+                            rejected += 1
+                            continue
+                        await ingest_json_object(item, line_no)
+                else:
+                    for i, raw_s in enumerate(text_file):
+                        line_no = i + 1
+                        raw_s = raw_s.strip()
+                        if not raw_s or raw_s.startswith("#"):
+                            continue
+                        try:
+                            raw = json.loads(raw_s)
+                        except json.JSONDecodeError:
+                            rejections.append((line_no, "invalid json", raw_s[:8000]))
+                            rejected += 1
+                            continue
+                        if not isinstance(raw, dict):
+                            rejections.append((line_no, "json must be object", raw_s[:8000]))
+                            rejected += 1
+                            continue
+                        await ingest_json_object(raw, line_no)
+            elif fmt == "txt":
+                target_field = column_map_s.get(LINE_VALUE_HEADER, "").strip()
                 for i, raw_s in enumerate(text_file):
                     line_no = i + 1
                     raw_s = raw_s.strip()
                     if not raw_s or raw_s.startswith("#"):
                         continue
-                    try:
-                        raw = json.loads(raw_s)
-                    except json.JSONDecodeError:
-                        rejections.append((line_no, "invalid json", raw_s[:8000]))
+                    if not target_field:
+                        rejections.append((line_no, "txt line value not mapped", raw_s[:8000]))
                         rejected += 1
                         continue
-                    if not isinstance(raw, dict):
-                        rejections.append((line_no, "json must be object", raw_s[:8000]))
-                        rejected += 1
-                        continue
+                    raw = {target_field: raw_s}
                     rib, accepted, dup, rejected = _append_row(
                         raw,
                         batch.id,
@@ -152,6 +238,7 @@ async def run_ingest_file_job(job_id: UUID) -> None:
                         rejections,
                     )
                     await flush_if_needed()
+                    await report_progress_if_needed()
             elif fmt == "csv":
                 reader = csv.reader(text_file, delimiter=csv_delim)
                 try:
@@ -186,6 +273,7 @@ async def run_ingest_file_job(job_id: UUID) -> None:
                         rejections,
                     )
                     await flush_if_needed()
+                    await report_progress_if_needed()
             elif fmt == "combo":
                 for i, raw_s in enumerate(text_file):
                     line_no = i + 1
@@ -216,6 +304,7 @@ async def run_ingest_file_job(job_id: UUID) -> None:
                         rejections,
                     )
                     await flush_if_needed()
+                    await report_progress_if_needed()
             else:
                 async with factory() as session:
                     await _fail_job(session, job_id, f"unsupported format {fmt!r}")

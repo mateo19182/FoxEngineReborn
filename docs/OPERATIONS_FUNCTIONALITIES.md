@@ -62,7 +62,7 @@ Primary flow:
 1. Preview upload (`POST /api/ingest/preview`)
 2. Detect per-file format + CSV headers/guesses
 3. Optional column-map suggestions (`POST /api/ingest/suggest-column-map`)
-4. Queue ingest from staged upload (`POST /api/ingest/file/from-upload`)
+4. Queue ingest from staged upload (`POST /api/ingest/file/from-upload`); staged objects under `uploads/staged/{upload_id}/` are deleted after a successful commit for the parts that were ingested
 
 Also supported:
 
@@ -90,9 +90,9 @@ Runtime ingest behavior:
 Export runtime behavior:
 
 - compile DSL into ClickHouse SQL
-- stream result batches up to configured cap
-- serialize to CSV/JSONL
-- upload artifact to object storage (`exports/<job-id>/...`)
+- prefer one-shot ClickHouse `INSERT INTO FUNCTION s3(...)` when enabled (`FOX_EXPORT_USE_CH_S3`, default true)
+- on failure or resume, keyset-batched `SELECT` (cursor on `ingest_ts`, `batch_id`, `row_in_batch`) with multipart upload to object storage
+- artifacts under `exports/<job-id>/result.csv` or `result.jsonl`
 - mark job done with `result_uri` for download
 
 ## Tags and Taxonomy

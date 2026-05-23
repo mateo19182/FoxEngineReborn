@@ -9,7 +9,6 @@ export function DocTip({ text }: { text: string }) {
         className="doc-tip__btn"
         aria-describedby={id}
         aria-label="Documentation"
-        title={text}
       >
         <span className="doc-tip__glyph" aria-hidden>
           i

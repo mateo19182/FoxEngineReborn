@@ -227,25 +227,17 @@ def materialize_tag_rows(
     return [[tag_id, batch_id, row_in_batch, assigned_at, source] for tag_id in tag_id_strs]
 
 
-def csv_row_to_raw(
-    header: list[str],
-    cells: list[str],
+def _mapped_values_to_raw(
+    values: dict[str, str],
     column_map: dict[str, str],
     *,
     allow_known_field_fallback: bool = True,
 ) -> dict[str, Any]:
-    """Map a CSV data line to the ingest `raw` dict using header names.
-
-    `column_map` maps CSV header label -> canonical field name (e.g. ``email``).
-    Headers not present in ``column_map`` become extras unless fallback is enabled
-    and the header (lowered) matches a known field name.
-    """
     raw: dict[str, Any] = {}
     extras: dict[str, str] = {}
-    for i, h in enumerate(header):
-        val = cells[i] if i < len(cells) else ""
-        hs = h.strip()
-        key = column_map.get(h) or column_map.get(hs)
+    for source_key, val in values.items():
+        hs = source_key.strip()
+        key = column_map.get(source_key) or column_map.get(hs)
         if key is None:
             hl = hs.lower()
             if allow_known_field_fallback and hl in KNOWN_RAW_FIELDS:
@@ -260,6 +252,44 @@ def csv_row_to_raw(
     if extras:
         raw["extras"] = extras
     return raw
+
+
+def csv_row_to_raw(
+    header: list[str],
+    cells: list[str],
+    column_map: dict[str, str],
+    *,
+    allow_known_field_fallback: bool = True,
+) -> dict[str, Any]:
+    """Map a CSV data line to the ingest `raw` dict using header names.
+
+    `column_map` maps CSV header label -> canonical field name (e.g. ``email``).
+    Headers not present in ``column_map`` become extras unless fallback is enabled
+    and the header (lowered) matches a known field name.
+    """
+    values: dict[str, str] = {}
+    for i, h in enumerate(header):
+        values[h] = cells[i] if i < len(cells) else ""
+    return _mapped_values_to_raw(
+        values,
+        column_map,
+        allow_known_field_fallback=allow_known_field_fallback,
+    )
+
+
+def json_object_to_raw(
+    obj: dict[str, Any],
+    column_map: dict[str, str],
+    *,
+    allow_known_field_fallback: bool = True,
+) -> dict[str, Any]:
+    """Map a JSON object to the ingest ``raw`` dict using source key names."""
+    values = {str(k): str(v) for k, v in obj.items()}
+    return _mapped_values_to_raw(
+        values,
+        column_map,
+        allow_known_field_fallback=allow_known_field_fallback,
+    )
 
 
 def ingest_timestamp() -> datetime:

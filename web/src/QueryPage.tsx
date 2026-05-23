@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   api,
@@ -49,6 +49,8 @@ type Tag = {
 
 type Me = { roles: string[]; llm_nl_enabled?: boolean };
 
+const QUERY_PAGE = 50;
+
 export function QueryPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -57,7 +59,14 @@ export function QueryPage() {
   const [res, setRes] = useState<QueryResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreResults, setHasMoreResults] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+
+  const queryFetchingRef = useRef(false);
+  const queryNextOffsetRef = useRef(0);
+  const queryTotalRef = useRef(0);
+  const querySentinelRef = useRef<HTMLDivElement | null>(null);
 
   const [tags, setTags] = useState<Tag[]>([]);
   const [families, setFamilies] = useState<TagFamily[]>([]);
@@ -196,27 +205,97 @@ export function QueryPage() {
     }
   }
 
+  const fetchResults = useCallback(
+    async (reset: boolean) => {
+      if (queryFetchingRef.current) return;
+      if (!reset && queryNextOffsetRef.current >= queryTotalRef.current) return;
+
+      queryFetchingRef.current = true;
+      const offset = reset ? 0 : queryNextOffsetRef.current;
+      if (reset) {
+        queryNextOffsetRef.current = 0;
+        setHasMoreResults(false);
+        setErr(null);
+        setExportMsg(null);
+        setLoading(true);
+      } else {
+        setLoadingMore(true);
+      }
+
+      try {
+        const data = await api<QueryResponse>("/query", {
+          method: "POST",
+          json: { dsl, limit: QUERY_PAGE, offset, view },
+        });
+        queryTotalRef.current = data.total;
+        if (data.rows.length === 0) {
+          queryNextOffsetRef.current = data.total;
+        } else {
+          queryNextOffsetRef.current = data.offset + data.limit;
+        }
+        setHasMoreResults(queryNextOffsetRef.current < data.total);
+        if (reset) {
+          setRes(data);
+        } else {
+          setRes((prev) => {
+            if (!prev) return data;
+            const seen = new Set(prev.rows.map((row) => rowKey(row)));
+            const merged = [...prev.rows];
+            for (const row of data.rows) {
+              const key = rowKey(row);
+              if (!seen.has(key)) {
+                seen.add(key);
+                merged.push(row);
+              }
+            }
+            return { ...prev, total: data.total, rows: merged, view: data.view };
+          });
+        }
+      } catch (ex) {
+        setErr(String(ex));
+      } finally {
+        queryFetchingRef.current = false;
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [dsl, view],
+  );
+
   async function executeQuery() {
-    setErr(null);
-    setExportMsg(null);
-    setLoading(true);
-    try {
-      const data = await api<QueryResponse>("/query", {
-        method: "POST",
-        json: { dsl, limit: 50, offset: 0, view },
-      });
-      setRes(data);
-    } catch (ex) {
-      setErr(String(ex));
-    } finally {
-      setLoading(false);
-    }
+    await fetchResults(true);
   }
 
   async function run(e: React.FormEvent) {
     e.preventDefault();
     await executeQuery();
   }
+
+  useEffect(() => {
+    if (!res || loading) return;
+    const el = querySentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (!entries[0]?.isIntersecting) return;
+        void fetchResults(false);
+      },
+      { root: null, rootMargin: "200px", threshold: 0 },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [fetchResults, hasMoreResults, loading, res]);
+
+  useLayoutEffect(() => {
+    const el = querySentinelRef.current;
+    if (!el || !res || loading || queryFetchingRef.current) return;
+    if (queryNextOffsetRef.current >= queryTotalRef.current) return;
+    const rect = el.getBoundingClientRect();
+    const vh = window.innerHeight || document.documentElement.clientHeight;
+    if (rect.top < vh + 240) {
+      void fetchResults(false);
+    }
+  }, [fetchResults, hasMoreResults, loading, res?.rows.length]);
 
   const panelErr = err && !dslHelpOpen && !savedViewsOpen && !nlModalOpen ? <p className="error">{err}</p> : null;
 
@@ -259,7 +338,6 @@ export function QueryPage() {
               value={dsl}
               onChange={setDsl}
               onRun={() => void executeQuery()}
-              required
               tags={tags}
               families={families}
               fields={dslFields}
@@ -345,9 +423,9 @@ export function QueryPage() {
           {exportMsg ? <p className="hint">{exportMsg}</p> : null}
           <p className="hint" style={{ marginTop: 0 }}>
             {res.view === "related"
-              ? `Total DSL matches: ${res.total}. Showing ${res.rows.length} linked row(s).`
-              : `Total matching: ${res.total}. Showing ${res.rows.length} row(s).`}{" "}
-            View: {res.view}.
+              ? `Total DSL matches: ${res.total}. Showing ${res.rows.length} linked row(s)`
+              : `Total matching: ${res.total}. Showing ${res.rows.length} row(s)`}
+            {hasMoreResults ? " (scroll for more)" : ""}. View: {res.view}.
           </p>
           {res.rows.length > 0 ? (
             <>
@@ -362,6 +440,8 @@ export function QueryPage() {
                 rowKey={rowKey}
                 rowClassName={rowClassName}
               />
+              {hasMoreResults ? <div ref={querySentinelRef} className="audit-sentinel" aria-hidden /> : null}
+              {loadingMore ? <p className="hint audit-loading-more">Loading more…</p> : null}
               <p className="hint" style={{ marginTop: "0.65rem", marginBottom: 0 }}>
                 Click a {resultsLayout === "cards" ? "card" : "row"} for all populated fields.
               </p>
@@ -425,7 +505,7 @@ export function QueryPage() {
           onClose={() => setDetailRowIndex(null)}
         >
           <p className="hint" style={{ marginTop: 0 }}>
-            View {detailRowIndex + 1} of {res.rows.length} in this preview (offset {res.offset}, view {res.view}).
+            Row {detailRowIndex + 1} of {res.rows.length} loaded (view {res.view}).
           </p>
           <dl className="row-detail-dl">
             {detailKeys.map((k) => (

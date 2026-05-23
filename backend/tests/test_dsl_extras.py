@@ -8,6 +8,12 @@ class TestDslExtras(unittest.TestCase):
     def _compile(self, dsl: str):
         return compile_expr(parse_dsl(dsl), {})
 
+    def test_empty_dsl_matches_all(self):
+        for dsl in ("", "   ", "\n\t"):
+            cw = self._compile(dsl)
+            self.assertEqual(cw.sql, "1 = 1")
+            self.assertEqual(cw.parameters, {})
+
     def test_extras_exact_any_value(self):
         cw = self._compile("extras:foo")
         self.assertIn("mapValues(extras)", cw.sql)

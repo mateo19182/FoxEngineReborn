@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, getToken, onUnauthorized } from "./api";
 import { DocTip } from "./DocTip";
+import { jobProgressView } from "./jobProgress";
+import { ProgressBar } from "./ProgressBar";
 
 function jobTypeLabel(type: string): string {
   switch (type) {
@@ -17,6 +19,17 @@ function jobTypeLabel(type: string): string {
 
 function isIngestJob(type: string): boolean {
   return type === "ingest_file";
+}
+
+function isExportJob(type: string): boolean {
+  return type === "export";
+}
+
+function exportDslSummary(checkpoint: Record<string, unknown>): string {
+  const dsl = checkpoint.dsl;
+  if (typeof dsl !== "string" || !dsl.trim()) return "";
+  const oneLine = dsl.replace(/\s+/g, " ").trim();
+  return oneLine.length > 48 ? `${oneLine.slice(0, 45)}…` : oneLine;
 }
 
 type Job = {
@@ -167,23 +180,39 @@ export function JobsPage() {
                   <th>Accepted</th>
                   <th>Rejected</th>
                   <th>Dup</th>
+                  <th>Progress</th>
                   <th>State</th>
-                  <th>Rows</th>
                   <th>Error</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
-                {filteredJobs.map((j) => (
+                {filteredJobs.map((j) => {
+                  const progress = jobProgressView(j);
+                  const exportJob = isExportJob(j.type);
+                  return (
                   <tr key={j.id}>
-                    <td>{j.batch_name ?? (!isIngestJob(j.type) ? j.id.slice(0, 8) : "")}</td>
+                    <td>
+                      {j.batch_name ??
+                        (exportJob ? exportDslSummary(j.checkpoint) || j.id.slice(0, 8) : !isIngestJob(j.type) ? j.id.slice(0, 8) : "")}
+                    </td>
                     <td>{jobTypeLabel(j.type)}</td>
-                    <td>{j.source_filename ?? ""}</td>
-                    <td>{j.accepted_rows ?? 0}</td>
-                    <td>{j.rejected_rows ?? 0}</td>
-                    <td>{j.duplicate_rows ?? 0}</td>
+                    <td>
+                      {exportJob
+                        ? (j.checkpoint.format === "jsonl" ? "JSONL" : "CSV")
+                        : (j.source_filename ?? "")}
+                    </td>
+                    <td>{exportJob ? "—" : (j.accepted_rows ?? 0)}</td>
+                    <td>{exportJob ? "—" : (j.rejected_rows ?? 0)}</td>
+                    <td>{exportJob ? "—" : (j.duplicate_rows ?? 0)}</td>
+                    <td className="jobs-progress-cell">
+                      <ProgressBar
+                        value={progress.mode === "determinate" ? progress.value : null}
+                        indeterminate={progress.mode === "indeterminate"}
+                        label={progress.label}
+                      />
+                    </td>
                     <td>{j.state}</td>
-                    <td>{j.processed_rows}</td>
                     <td>{j.error ?? ""}</td>
                     <td>
                       {j.state === "done" && j.result_uri ? (
@@ -217,7 +246,8 @@ export function JobsPage() {
                       ) : null}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

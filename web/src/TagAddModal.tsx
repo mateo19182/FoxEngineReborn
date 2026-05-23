@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, getToken, onUnauthorized, type TagFamily } from "./api";
+import { api, uploadForm, type TagFamily } from "./api";
 import { DocTip } from "./DocTip";
 import { Modal } from "./Modal";
+import { ProgressBar } from "./ProgressBar";
 
 type AddMode = "single" | "csv";
 
@@ -29,6 +30,7 @@ export function TagAddModal({
   const [bulkFile, setBulkFile] = useState<File | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
 
   function reset() {
     setMode("single");
@@ -38,6 +40,7 @@ export function TagAddModal({
     setBulkFile(null);
     setErr(null);
     setPending(false);
+    setUploadPercent(null);
   }
 
   function handleClose() {
@@ -81,33 +84,15 @@ export function TagAddModal({
       setErr("Choose a CSV file");
       return;
     }
-    const token = getToken();
-    if (!token) {
-      setErr("Not logged in");
-      return;
-    }
     setPending(true);
+    setUploadPercent(0);
     try {
       const fd = new FormData();
       fd.append("file", bulkFile);
       fd.append("tag_names", bulkTags);
-      const r = await fetch("/api/tags/bulk-apply", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
+      const text = await uploadForm("/tags/bulk-apply", fd, (progress) => {
+        setUploadPercent(progress.percent);
       });
-      const text = await r.text();
-      if (!r.ok) {
-        let detail = text;
-        try {
-          const j = JSON.parse(text) as { detail?: string };
-          if (j.detail) detail = j.detail;
-        } catch {
-          /* ignore */
-        }
-        onUnauthorized(r.status, true);
-        throw new Error(detail);
-      }
       const data = JSON.parse(text) as { job_id: string };
       await onCreated();
       onBulkQueued(`Job ${data.job_id} queued. Check Jobs when it finishes.`);
@@ -116,6 +101,7 @@ export function TagAddModal({
       setErr(String(ex));
     } finally {
       setPending(false);
+      setUploadPercent(null);
     }
   }
 
@@ -200,6 +186,16 @@ export function TagAddModal({
               onChange={(e) => setBulkFile(e.target.files?.[0] ?? null)}
               required
             />
+            {pending && uploadPercent != null ? (
+              <ProgressBar
+                className="upload-progress"
+                value={uploadPercent}
+                label={`Uploading ${uploadPercent}%`}
+              />
+            ) : null}
+            {pending && uploadPercent == null ? (
+              <ProgressBar className="upload-progress" indeterminate label="Uploading…" />
+            ) : null}
           </div>
           <div className="btn-row">
             <span className="btn-with-tip">

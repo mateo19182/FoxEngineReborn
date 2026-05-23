@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import re
 import secrets
 import time
@@ -41,13 +42,16 @@ from foxengine.services.file_hash import sha256_hex
 from foxengine.services.format_detect import (
     CANONICAL,
     CANONICAL_FIELDS,
+    DetectResult,
     analyze_text_payload,
     detect_for_ingest,
+    is_delimited_text_filename,
 )
 from foxengine.services.ingest import ingest_sync
 from foxengine.services.batch_purge import schedule_batch_purge
 from foxengine.services.deleted_batches import batch_clickhouse_counts, deleted_batch_sql_clause
-from foxengine.services.job_queries import compile_leads_where, leads_select_sql
+from foxengine.dsl.sql import CompiledLeadsQuery
+from foxengine.services.job_queries import compile_leads_where, leads_count_sql, leads_select_sql
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, llm_health_status
 from foxengine.dsl.fields import DSL_FIELD_SPECS
 from foxengine.services.nl_to_dsl import translate_nl_to_dsl
@@ -64,6 +68,8 @@ from foxengine.tasks import (
     foxengine_ingest_file,
     foxengine_purge_batch,
 )
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -732,7 +738,7 @@ async def run_query(
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     try:
-        where_sql, params = await compile_leads_where(session, body.dsl)
+        compiled = await compile_leads_where(session, body.dsl)
     except Exception as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid dsl: {e}") from e
 
@@ -742,10 +748,11 @@ async def run_query(
         "max_result_rows": 1000,
         "max_memory_usage": "4000000000",
     }
-    count_sql = f"SELECT count() FROM leads WHERE {where_sql}"
-
-    cnt = (await ch.query(count_sql, parameters=params, settings=settings_ch)).first_row[0]
-    data_sql = leads_select_sql(where_sql, limit=body.limit, offset=body.offset)
+    params = compiled.parameters
+    cnt = (
+        await ch.query(leads_count_sql(compiled), parameters=params, settings=settings_ch)
+    ).first_row[0]
+    data_sql = leads_select_sql(compiled, limit=body.limit, offset=body.offset)
     qr = await ch.query(data_sql, parameters=params, settings=settings_ch)
     out_rows = [dict(r) for r in qr.named_results()]
     if body.view == "related" and out_rows:
@@ -770,7 +777,12 @@ async def run_query(
             f"){deleted_extra}"
         )
         related_params.update(deleted_params)
-        related_sql = leads_select_sql(related_where_sql, limit=s.related_rows_cap)
+        related_compiled = CompiledLeadsQuery(
+            leads_where=related_where_sql,
+            parameters=related_params,
+            tag_keys_select=None,
+        )
+        related_sql = leads_select_sql(related_compiled, limit=s.related_rows_cap)
         related_settings_ch = {**settings_ch, "max_result_rows": int(s.related_rows_cap)}
         related_qr = await ch.query(
             related_sql,
@@ -1155,14 +1167,39 @@ def _inner_storage_key(inner_name: str) -> str:
     return inner_name.replace("/", "_").replace("\\", "_")[:220]
 
 
-def _preview_file_payload(
+def _staged_upload_prefix(upload_id: UUID) -> str:
+    return f"uploads/staged/{upload_id}/"
+
+
+async def _delete_staged_upload_keys(*, upload_id: UUID, keys: set[str]) -> None:
+    prefix = _staged_upload_prefix(upload_id)
+    safe_keys = {key for key in keys if key.startswith(prefix)}
+    if not safe_keys:
+        return
+    s = get_settings()
+    session_boto = aioboto3.Session()
+    async with session_boto.client(
+        "s3",
+        endpoint_url=s.s3_endpoint_url,
+        aws_access_key_id=s.s3_access_key_id,
+        aws_secret_access_key=s.s3_secret_access_key,
+        region_name=s.s3_region,
+    ) as c:
+        for key in safe_keys:
+            try:
+                await c.delete_object(Bucket=s.s3_bucket_uploads, Key=key)
+            except Exception as e:
+                log.warning("failed to delete staged upload object %s: %s", key, e)
+
+
+def _preview_dict_from_detect(
     inner_name: str,
-    blob: bytes,
+    d: DetectResult,
     *,
-    staging_key: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    d = analyze_text_payload(inner_name, blob)
-    preview = {
+    size: int,
+    duplicate_match: schemas.IngestDuplicateMatch | None = None,
+) -> dict[str, Any]:
+    preview: dict[str, Any] = {
         "inner_name": inner_name,
         "format": d.format,
         "format_confidence": d.format_confidence,
@@ -1171,8 +1208,35 @@ def _preview_file_payload(
         "column_guesses": d.column_guesses,
         "recommended_column_map": d.recommended_column_map,
         "sample_rows": d.sample_rows[:10],
-        "size": len(blob),
+        "size": size,
     }
+    if duplicate_match is not None:
+        preview["duplicate_match"] = duplicate_match.model_dump()
+    return preview
+
+
+def _staged_column_map(d: DetectResult) -> dict[str, str]:
+    if d.format in ("csv", "jsonl"):
+        return dict(d.recommended_column_map)
+    return {}
+
+
+def _apply_detect_to_staged_part(part: dict[str, Any], d: DetectResult) -> None:
+    part["format"] = d.format
+    part["detect_confidence"] = d.format_confidence
+    part["csv_delimiter"] = d.csv_delimiter or ","
+    part["column_map"] = _staged_column_map(d)
+
+
+def _preview_file_payload(
+    inner_name: str,
+    blob: bytes,
+    *,
+    staging_key: str,
+    csv_delimiter: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    d = analyze_text_payload(inner_name, blob, csv_delimiter=csv_delimiter)
+    preview = _preview_dict_from_detect(inner_name, d, size=len(blob))
     staged = {
         "inner_name": inner_name,
         "staging_key": staging_key,
@@ -1180,7 +1244,7 @@ def _preview_file_payload(
         "format": d.format,
         "detect_confidence": d.format_confidence,
         "csv_delimiter": d.csv_delimiter or ",",
-        "column_map": dict(d.recommended_column_map) if d.format == "csv" else {},
+        "column_map": _staged_column_map(d),
     }
     return preview, staged
 
@@ -1747,7 +1811,8 @@ async def ingest_preview(
             source_sha256 = sha256_hex(blob)
             duplicate_match = await _duplicate_match_for_hash(session, source_sha256)
             preview, staged = _preview_file_payload(inner_name, blob, staging_key=key)
-            preview["duplicate_match"] = duplicate_match.model_dump() if duplicate_match else None
+            if duplicate_match is not None:
+                preview["duplicate_match"] = duplicate_match.model_dump()
             staged["source_sha256"] = source_sha256
             files_out.append(preview)
             staged_parts.append(staged)
@@ -1787,6 +1852,72 @@ async def ingest_preview(
         canonical_fields=list(CANONICAL_FIELDS),
         files=[schemas.IngestPreviewFile(**item) for item in files_out],
     )
+
+
+@router.post("/ingest/preview/delimiter", response_model=schemas.IngestPreviewFile)
+async def ingest_preview_delimiter(
+    body: schemas.IngestPreviewDelimiterRequest,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> schemas.IngestPreviewFile:
+    try:
+        upload_id = UUID(body.upload_id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid upload_id") from e
+
+    res = await session.execute(select(Job).where(Job.id == upload_id))
+    upload = res.scalar_one_or_none()
+    if (
+        upload is None
+        or upload.type != "ingest_upload"
+        or not _can_view_job(principal, upload)
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "upload not found")
+
+    parts = _upload_checkpoint_parts(upload)
+    part = next((p for p in parts if p.get("inner_name") == body.inner_name), None)
+    if part is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown file: {body.inner_name}")
+    if not is_delimited_text_filename(body.inner_name):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "delimiter override only applies to csv and tsv files",
+        )
+
+    staging_key = str(part.get("staging_key") or "")
+    if not staging_key:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "staged file is missing storage key")
+
+    s = get_settings()
+    session_boto = aioboto3.Session()
+    async with session_boto.client(
+        "s3",
+        endpoint_url=s.s3_endpoint_url,
+        aws_access_key_id=s.s3_access_key_id,
+        aws_secret_access_key=s.s3_secret_access_key,
+        region_name=s.s3_region,
+    ) as c:
+        obj = await c.get_object(Bucket=s.s3_bucket_uploads, Key=staging_key)
+        blob = await obj["Body"].read()
+
+    d = analyze_text_payload(body.inner_name, blob, csv_delimiter=body.csv_delimiter)
+    _apply_detect_to_staged_part(part, d)
+    ck = dict(upload.checkpoint or {})
+    ck["parts"] = parts
+    upload.checkpoint = ck
+
+    source_sha256 = str(part.get("source_sha256") or "").strip()
+    duplicate_match = (
+        await _duplicate_match_for_hash(session, source_sha256) if source_sha256 else None
+    )
+    await session.commit()
+    preview = _preview_dict_from_detect(
+        body.inner_name,
+        d,
+        size=len(blob),
+        duplicate_match=duplicate_match,
+    )
+    return schemas.IngestPreviewFile(**preview)
 
 
 @router.post("/ingest/suggest-column-map", response_model=schemas.ColumnMapSuggestResponse)
@@ -1842,6 +1973,7 @@ async def ingest_file_from_upload(
     outer_fn = str(dict(upload.checkpoint or {}).get("outer_filename") or "upload.bin")
     s = get_settings()
     items_out: list[dict[str, Any]] = []
+    staging_keys_to_delete: set[str] = set()
     session_boto = aioboto3.Session()
     async with session_boto.client(
         "s3",
@@ -1858,11 +1990,13 @@ async def ingest_file_from_upload(
                 staging_key = str(part.get("staging_key") or "")
                 if not inner_name or not staging_key:
                     raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid staged upload part")
+                staging_keys_to_delete.add(staging_key)
                 obj = await c.get_object(Bucket=s.s3_bucket_uploads, Key=staging_key)
                 blobs.append((inner_name, await obj["Body"].read()))
             merged_name, merged_blob = merge_text_parts(blobs)
             merged_key = f"uploads/staged/{upload_id}/merged-{_inner_storage_key(merged_name)}"
             await c.put_object(Bucket=s.s3_bucket_uploads, Key=merged_key, Body=merged_blob)
+            staging_keys_to_delete.add(merged_key)
             resolved_fmt, detect_extras = detect_for_ingest(merged_name, merged_blob, "auto")
             parts_to_queue = [
                 {
@@ -1894,7 +2028,7 @@ async def ingest_file_from_upload(
                     "staged upload part is missing format",
                 )
             resolved_fmt = raw_fmt
-            if resolved_fmt not in ("jsonl", "csv", "combo"):
+            if resolved_fmt not in ("jsonl", "csv", "combo", "txt"):
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
                     f"unsupported format {resolved_fmt!r}",
@@ -1906,7 +2040,7 @@ async def ingest_file_from_upload(
             if (
                 user_maps_by_file_provided
                 and inner_name in user_maps_by_file
-                and resolved_fmt == "csv"
+                and resolved_fmt in ("csv", "jsonl", "txt")
             ):
                 merged_map.update(user_maps_by_file[inner_name])
                 column_map_source = "manual"
@@ -1922,6 +2056,7 @@ async def ingest_file_from_upload(
                 Key=key,
                 CopySource={"Bucket": s.s3_bucket_uploads, "Key": staging_key},
             )
+            staging_keys_to_delete.add(staging_key)
 
             if len(parts_to_queue) == 1 and not body.merge_archive:
                 display_name = body.batch_name or outer_fn
@@ -1992,6 +2127,7 @@ async def ingest_file_from_upload(
         details={"job_ids": [x["job_id"] for x in items_out]},
     )
     await session.commit()
+    await _delete_staged_upload_keys(upload_id=upload_id, keys=staging_keys_to_delete)
     for it in items_out:
         await foxengine_ingest_file.defer_async(job_id=it["job_id"])
     if len(items_out) == 1:
@@ -2063,7 +2199,7 @@ async def ingest_file(
             elif user_column_map_provided:
                 manual_map = user_column_map
 
-            if manual_map is not None and resolved_fmt == "csv":
+            if manual_map is not None and resolved_fmt in ("csv", "jsonl", "txt"):
                 merged_map.update(manual_map)
                 column_map_source = "manual"
             elif isinstance(auto_map, dict):

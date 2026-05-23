@@ -1,10 +1,19 @@
 import { useMemo, useRef, useState } from "react";
-import { api, getToken, onUnauthorized } from "./api";
+import { api, uploadForm } from "./api";
 import { DocTip } from "./DocTip";
+import { ProgressBar } from "./ProgressBar";
 import { getDuplicatePreviewFiles } from "./ingestDuplicateUtils";
 
 const COLUMN_MAP_SAMPLE_ROW_COUNT = 5;
 const COLUMN_MAP_DISCARD_VALUE = "__discard__";
+const LINE_VALUE_HEADER = "$value";
+
+const DELIMITER_OPTIONS = [
+  { value: ",", label: "Comma (,)" },
+  { value: ";", label: "Semicolon (;)" },
+  { value: "\t", label: "Tab" },
+  { value: "|", label: "Pipe (|)" },
+] as const;
 
 const FALLBACK_CANONICAL_FIELDS = [
   "phone",
@@ -120,6 +129,43 @@ function confidenceLabel(value: number | undefined): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function isDelimiterConfigurable(file: PreviewFile): boolean {
+  const lower = file.inner_name.toLowerCase();
+  return file.format === "csv" || lower.endsWith(".csv") || lower.endsWith(".tsv");
+}
+
+function isJsonColumnMapping(file: PreviewFile): boolean {
+  return file.format === "jsonl" && Boolean(file.headers?.length);
+}
+
+function isTxtLineMapping(file: PreviewFile): boolean {
+  return file.format === "txt";
+}
+
+function delimiterLabel(value: string | null | undefined): string {
+  const match = DELIMITER_OPTIONS.find((option) => option.value === value);
+  return match?.label ?? value ?? ",";
+}
+
+function columnSelectionsForFile(file: PreviewFile): Record<string, string> {
+  const fileSelections: Record<string, string> = {};
+  for (const header of file.headers ?? []) {
+    if (!header) continue;
+    fileSelections[header] = file.recommended_column_map?.[header] ?? "";
+  }
+  return fileSelections;
+}
+
+function buildColumnSelections(files: PreviewFile[]): Record<string, Record<string, string>> {
+  const nextSelections: Record<string, Record<string, string>> = {};
+  for (const item of files) {
+    if (item.format === "csv" || isJsonColumnMapping(item) || isTxtLineMapping(item)) {
+      nextSelections[item.inner_name] = columnSelectionsForFile(item);
+    }
+  }
+  return nextSelections;
+}
+
 function formatBytes(value: number | undefined): string {
   if (value === undefined) return "";
   if (value < 1024) return `${value} B`;
@@ -148,7 +194,9 @@ export function IngestPage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
   const [suggestingInnerName, setSuggestingInnerName] = useState<string | null>(null);
+  const [delimiterLoadingInnerName, setDelimiterLoadingInnerName] = useState<string | null>(null);
   const [tags, setTags] = useState<TagOption[]>([]);
   const [tagsLoaded, setTagsLoaded] = useState(false);
   const [tagSuggestionsOpen, setTagSuggestionsOpen] = useState(false);
@@ -161,13 +209,22 @@ export function IngestPage() {
     ? previewData.canonical_fields
     : FALLBACK_CANONICAL_FIELDS;
   const selectedFileNameSet = useMemo(() => new Set(selectedFileNames), [selectedFileNames]);
-  const csvPreviewFiles =
+  const tabularPreviewFiles =
     previewData?.files.filter(
       (item) =>
         !mergeArchive &&
         selectedFileNameSet.has(item.inner_name) &&
-        item.format === "csv" &&
-        item.headers?.length,
+        isDelimiterConfigurable(item),
+    ) ?? [];
+  const jsonPreviewFiles =
+    previewData?.files.filter(
+      (item) =>
+        !mergeArchive && selectedFileNameSet.has(item.inner_name) && isJsonColumnMapping(item),
+    ) ?? [];
+  const txtPreviewFiles =
+    previewData?.files.filter(
+      (item) =>
+        !mergeArchive && selectedFileNameSet.has(item.inner_name) && isTxtLineMapping(item),
     ) ?? [];
   const duplicatePreviewFiles = getDuplicatePreviewFiles(previewData?.files, selectedFileNameSet);
   const canChooseArchiveMembers = (previewData?.files.length ?? 0) > 1;
@@ -268,36 +325,16 @@ export function IngestPage() {
       setErr("Choose a file for preview");
       return;
     }
-    const token = getToken();
-    if (!token) {
-      setErr("Not logged in");
-      return;
-    }
     setPreviewLoading(true);
+    setUploadPercent(0);
     try {
       const fd = new FormData();
       fd.append("file", selectedFile);
-      const r = await fetch("/api/ingest/preview", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: fd,
+      const text = await uploadForm("/ingest/preview", fd, (progress) => {
+        setUploadPercent(progress.percent);
       });
-      const text = await r.text();
-      if (!r.ok) {
-        onUnauthorized(r.status, true);
-        throw new Error(text || r.statusText);
-      }
       const data = JSON.parse(text) as PreviewResponse;
-      const nextSelections: Record<string, Record<string, string>> = {};
-      for (const item of data.files ?? []) {
-        if (item.format !== "csv") continue;
-        const fileSelections: Record<string, string> = {};
-        for (const header of item.headers ?? []) {
-          if (!header) continue;
-          fileSelections[header] = item.recommended_column_map?.[header] ?? "";
-        }
-        nextSelections[item.inner_name] = fileSelections;
-      }
+      const nextSelections = buildColumnSelections(data.files ?? []);
       setPreviewData(data);
       setSelectedFileNames((data.files ?? []).map((item) => item.inner_name));
       setColumnSelectionsByFile(nextSelections);
@@ -306,6 +343,48 @@ export function IngestPage() {
       setErr(String(ex));
     } finally {
       setPreviewLoading(false);
+      setUploadPercent(null);
+    }
+  }
+
+  function mergePreviewFile(updated: PreviewFile) {
+    setPreviewData((current) => {
+      if (!current) return current;
+      const files = current.files.map((file) =>
+        file.inner_name === updated.inner_name ? updated : file,
+      );
+      return { ...current, files };
+    });
+    const nextSelections = { ...columnSelectionsByFile };
+    if (
+      (updated.format === "csv" || isJsonColumnMapping(updated) || isTxtLineMapping(updated)) &&
+      updated.headers?.length
+    ) {
+      nextSelections[updated.inner_name] = columnSelectionsForFile(updated);
+    } else {
+      delete nextSelections[updated.inner_name];
+    }
+    updateColumnSelections(nextSelections);
+  }
+
+  async function refreshDelimiter(filePreview: PreviewFile, csvDelimiter: string) {
+    if (!previewData || csvDelimiter === (filePreview.csv_delimiter ?? ",")) return;
+    setErr(null);
+    setDelimiterLoadingInnerName(filePreview.inner_name);
+    try {
+      const updated = await api<PreviewFile>("/ingest/preview/delimiter", {
+        method: "POST",
+        json: {
+          upload_id: previewData.upload_id,
+          inner_name: filePreview.inner_name,
+          csv_delimiter: csvDelimiter,
+        },
+      });
+      mergePreviewFile(updated);
+    } catch (ex) {
+      setErr(String(ex));
+    } finally {
+      setDelimiterLoadingInnerName(null);
     }
   }
 
@@ -319,7 +398,7 @@ export function IngestPage() {
       const data = await api<ColumnMapSuggestResponse>("/ingest/suggest-column-map", {
         method: "POST",
         json: {
-          format: "csv",
+          format: filePreview.format,
           inner_name: filePreview.inner_name,
           headers,
           sample_rows: filePreview.sample_rows ?? [],
@@ -337,7 +416,7 @@ export function IngestPage() {
           ...mergedSelections,
         },
       });
-      setMsg(`Local LLM suggested ${Object.keys(data.column_map).length} CSV mappings.`);
+      setMsg(`Local LLM suggested ${Object.keys(data.column_map).length} field mappings.`);
     } catch (ex) {
       setErr(String(ex));
     } finally {
@@ -395,14 +474,14 @@ export function IngestPage() {
         <div>
           <h1>Ingest file</h1>
           <p className="lead">
-            Preview every upload, review CSV column matches when needed, then queue the ingest job.
+            Preview every upload, map CSV/JSON fields or TXT line values when needed, then queue the ingest job.
           </p>
         </div>
       </header>
 
       <section className="panel">
         <p className="hint" style={{ marginTop: 0 }}>
-          Supports JSONL, CSV, combo lines, and archives. The file is uploaded once during preview, then
+          Supports JSON/JSONL, CSV, TXT (one value per line), combo lines, and archives. The file is uploaded once during preview, then
           queued from the stored upload after you confirm the detected contents.
         </p>
         <form onSubmit={submit}>
@@ -435,6 +514,18 @@ export function IngestPage() {
                 </button>
               ) : null}
             </div>
+            {previewLoading ? (
+              <ProgressBar
+                className="upload-progress"
+                value={uploadPercent}
+                indeterminate={uploadPercent == null}
+                label={
+                  uploadPercent != null
+                    ? `Uploading ${uploadPercent}%`
+                    : "Uploading…"
+                }
+              />
+            ) : null}
           </div>
           <div className="field">
             <label htmlFor="ing-tags">Tag names (comma-separated, created if missing)</label>
@@ -572,32 +663,54 @@ export function IngestPage() {
               ) : null}
             </div>
           ) : null}
-          {csvPreviewFiles.length ? (
+          {tabularPreviewFiles.length ? (
             <div className="field">
               <div className="label-row">
-                <span>CSV column mapping</span>
-                <DocTip text="Preview fills the best guess for each CSV header. Set a field to Auto to keep fallback behavior, or Discard to skip that source column entirely." />
+                <span>CSV / TSV column mapping</span>
+                <DocTip text="Separator is auto-detected from a sample of the file. Change it to reload headers and row preview. Set a field to Auto to keep fallback behavior, or Discard to skip that source column entirely." />
               </div>
               <div className="column-map-stack">
-                {csvPreviewFiles.map((item) => (
+                {tabularPreviewFiles.map((item) => (
                   <div className="column-map-card" key={item.inner_name}>
                     <div className="column-map-card__head">
                       <div>
                         <strong>{item.inner_name}</strong>
                         <p className="hint">
-                          CSV delimiter {item.csv_delimiter || ","}; confidence{" "}
+                          Detected {delimiterLabel(item.csv_delimiter)} · format {item.format} · confidence{" "}
                           {confidenceLabel(item.format_confidence)}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        className="secondary"
-                        disabled={suggestingInnerName === item.inner_name}
-                        onClick={() => suggestColumnMap(item)}
-                      >
-                        {suggestingInnerName === item.inner_name ? "Asking LLM..." : "Suggest with local LLM"}
-                      </button>
+                      {item.format === "csv" && item.headers?.length ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={suggestingInnerName === item.inner_name}
+                          onClick={() => suggestColumnMap(item)}
+                        >
+                          {suggestingInnerName === item.inner_name ? "Asking LLM..." : "Suggest with local LLM"}
+                        </button>
+                      ) : null}
                     </div>
+                    <div className="column-map-delimiter-row">
+                      <label htmlFor={`delimiter-${item.inner_name}`}>Separator</label>
+                      <select
+                        id={`delimiter-${item.inner_name}`}
+                        value={item.csv_delimiter ?? ","}
+                        disabled={delimiterLoadingInnerName === item.inner_name}
+                        onChange={(event) => refreshDelimiter(item, event.target.value)}
+                      >
+                        {DELIMITER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      {delimiterLoadingInnerName === item.inner_name ? (
+                        <span className="hint">Reloading preview…</span>
+                      ) : null}
+                    </div>
+                    {item.format === "csv" && item.headers?.length ? (
+                      <>
                     <div className="column-map-card__meta">
                       {(() => {
                         const values = Object.values(columnSelectionsByFile[item.inner_name] ?? {});
@@ -717,6 +830,195 @@ export function IngestPage() {
                         </tbody>
                       </table>
                     </div>
+                      </>
+                    ) : (
+                      <p className="hint">No columns detected with this separator. Try another separator.</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {jsonPreviewFiles.length ? (
+            <div className="field">
+              <div className="label-row">
+                <span>JSON field mapping</span>
+                <DocTip text="Preview shows a small sample of objects from the file, not the full dataset. Map each JSON key to a canonical field before queueing." />
+              </div>
+              <div className="column-map-stack">
+                {jsonPreviewFiles.map((item) => (
+                  <div className="column-map-card" key={item.inner_name}>
+                    <div className="column-map-card__head">
+                      <div>
+                        <strong>{item.inner_name}</strong>
+                        <p className="hint">
+                          JSON · confidence {confidenceLabel(item.format_confidence)} · sample objects shown
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={suggestingInnerName === item.inner_name}
+                        onClick={() => suggestColumnMap(item)}
+                      >
+                        {suggestingInnerName === item.inner_name ? "Asking LLM..." : "Suggest with local LLM"}
+                      </button>
+                    </div>
+                    <div className="column-map-table-wrap">
+                      <table className="column-map-table">
+                        <thead>
+                          <tr>
+                            <th>JSON key</th>
+                            <th>Detected</th>
+                            <th>Other guesses</th>
+                            <th>Sample values</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(item.headers ?? []).map((header) => {
+                            const bestGuess = bestGuessFor(item, header);
+                            const guesses = item.column_guesses?.[header] ?? [];
+                            const previewValues = (item.sample_rows ?? [])
+                              .slice(0, COLUMN_MAP_SAMPLE_ROW_COUNT)
+                              .map((row, rowIndex) => ({
+                                row: rowIndex + 1,
+                                value: row[header] ?? "",
+                              }));
+                            return (
+                              <tr key={`${item.inner_name}:${header}`}>
+                                <td>
+                                  <code>{header}</code>
+                                </td>
+                                <td>
+                                  {bestGuess ? (
+                                    <span>
+                                      <code>{bestGuess.field}</code>{" "}
+                                      <span className="column-map-confidence">
+                                        {confidenceLabel(bestGuess.confidence)}
+                                      </span>
+                                    </span>
+                                  ) : (
+                                    <span className="muted">No guess</span>
+                                  )}
+                                </td>
+                                <td>
+                                  {guesses.length ? (
+                                    <span className="column-map-alternates">
+                                      {guesses
+                                        .map((guess) => `${guess.field} ${confidenceLabel(guess.confidence)}`)
+                                        .join(", ")}
+                                    </span>
+                                  ) : (
+                                    <span className="muted">None</span>
+                                  )}
+                                </td>
+                                <td className="column-map-preview-cell">
+                                  {previewValues.length ? (
+                                    <ul className="column-map-preview-list">
+                                      {previewValues.map((entry) => (
+                                        <li key={`${item.inner_name}:${header}:preview:${entry.row}`}>
+                                          <span className="column-map-preview-row">{entry.row}.</span>
+                                          <span
+                                            className={
+                                              entry.value ? "column-map-preview-value" : "column-map-preview-empty"
+                                            }
+                                          >
+                                            {entry.value || "—"}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  ) : (
+                                    <span className="muted">No sample values</span>
+                                  )}
+                                </td>
+                                <td>
+                                  <select
+                                    aria-label={`Target field for ${header}`}
+                                    value={columnSelectionsByFile[item.inner_name]?.[header] ?? ""}
+                                    className={
+                                      isDiscardSelection(columnSelectionsByFile[item.inner_name]?.[header])
+                                        ? "column-map-select--discard"
+                                        : undefined
+                                    }
+                                    onChange={(event) =>
+                                      updateColumnSelections({
+                                        ...columnSelectionsByFile,
+                                        [item.inner_name]: {
+                                          ...(columnSelectionsByFile[item.inner_name] ?? {}),
+                                          [header]: event.target.value,
+                                        },
+                                      })
+                                    }
+                                  >
+                                    <option value="">Auto (leave unmapped)</option>
+                                    <option value={COLUMN_MAP_DISCARD_VALUE}>Discard field</option>
+                                    {canonicalFields.map((field) => (
+                                      <option key={field} value={field}>
+                                        {field}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {txtPreviewFiles.length ? (
+            <div className="field">
+              <div className="label-row">
+                <span>TXT line mapping</span>
+                <DocTip text="Plain text files are treated as one value per line with no columns. Pick which canonical field each line should populate." />
+              </div>
+              <div className="column-map-stack">
+                {txtPreviewFiles.map((item) => (
+                  <div className="column-map-card" key={item.inner_name}>
+                    <div className="column-map-card__head">
+                      <div>
+                        <strong>{item.inner_name}</strong>
+                        <p className="hint">
+                          TXT · confidence {confidenceLabel(item.format_confidence)} · sample lines shown
+                        </p>
+                      </div>
+                    </div>
+                    <div className="field">
+                      <label htmlFor={`txt-field-${item.inner_name}`}>Each line maps to</label>
+                      <select
+                        id={`txt-field-${item.inner_name}`}
+                        value={columnSelectionsByFile[item.inner_name]?.[LINE_VALUE_HEADER] ?? ""}
+                        onChange={(event) =>
+                          updateColumnSelections({
+                            ...columnSelectionsByFile,
+                            [item.inner_name]: {
+                              [LINE_VALUE_HEADER]: event.target.value,
+                            },
+                          })
+                        }
+                      >
+                        <option value="">Choose a field…</option>
+                        {canonicalFields.map((field) => (
+                          <option key={field} value={field}>
+                            {field}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <ul className="column-map-preview-list">
+                      {(item.sample_rows ?? []).slice(0, COLUMN_MAP_SAMPLE_ROW_COUNT).map((row, rowIndex) => (
+                        <li key={`${item.inner_name}:line:${rowIndex}`}>
+                          <span className="column-map-preview-row">{rowIndex + 1}.</span>
+                          <span className="column-map-preview-value">{row[LINE_VALUE_HEADER] || "—"}</span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 ))}
               </div>

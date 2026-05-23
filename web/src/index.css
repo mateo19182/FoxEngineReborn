@@ -1258,6 +1258,23 @@ button:disabled {
   margin-top: 0.2rem;
 }
 
+.column-map-delimiter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.column-map-delimiter-row label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.column-map-delimiter-row select {
+  min-width: 10rem;
+}
+
 .column-map-card__meta {
   display: flex;
   flex-wrap: wrap;
@@ -2385,4 +2402,56 @@ tbody tr:hover td {
 .hint code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 0.85em;
+}
+
+.progress-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 8rem;
+}
+
+.progress-bar__label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-bar__track {
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-bar__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.progress-bar__track--indeterminate .progress-bar__fill {
+  width: 35% !important;
+  animation: progress-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.upload-progress {
+  margin-top: 0.5rem;
+}
+
+.jobs-progress-cell {
+  min-width: 10rem;
 }

@@ -4,8 +4,12 @@ from lark import Lark, Token, Transformer, v_args
 
 from foxengine.dsl.ast_nodes import And, Expr, Not, Or, Pred
 
+_MATCH_ALL = And([])
+
 GRAMMAR = r"""
-?start: expr
+?start: expr | match_all
+
+?match_all:
 
 ?expr: orexpr
 
@@ -32,6 +36,9 @@ PRED_VALUE: /[^\s()]+/
 
 
 class Tree(Transformer[Token, Expr]):
+    def match_all(self, _items: list) -> Expr:
+        return _MATCH_ALL
+
     def orexpr(self, items: list) -> Expr:
         parts = [items[i] for i in range(0, len(items), 2)]
         if len(parts) == 1:
@@ -63,4 +70,6 @@ _parser = Lark(GRAMMAR, parser="lalr", transformer=Tree())
 
 
 def parse_dsl(text: str) -> Expr:
+    if not text.strip():
+        return _MATCH_ALL
     return cast(Expr, _parser.parse(text.strip()))

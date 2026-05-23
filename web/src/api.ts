@@ -53,6 +53,48 @@ export async function api<T>(
   return data as T;
 }
 
+export type UploadProgress = {
+  loaded: number;
+  total: number | null;
+  percent: number | null;
+};
+
+/** POST multipart form data with upload progress (XHR). */
+export function uploadForm(
+  path: string,
+  formData: FormData,
+  onProgress?: (progress: UploadProgress) => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const token = getToken();
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api${path}`);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => {
+        const percent = event.lengthComputable
+          ? Math.round((event.loaded / event.total) * 100)
+          : null;
+        onProgress({
+          loaded: event.loaded,
+          total: event.lengthComputable ? event.total : null,
+          percent,
+        });
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.responseText);
+        return;
+      }
+      onUnauthorized(xhr.status, Boolean(token));
+      reject(new Error(xhr.responseText || xhr.statusText));
+    };
+    xhr.onerror = () => reject(new Error("upload failed"));
+    xhr.send(formData);
+  });
+}
+
 export type QueryView = "rows" | "related";
 
 export type TagFamily = {

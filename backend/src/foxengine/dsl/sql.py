@@ -5,6 +5,15 @@ from typing import Any
 from uuid import UUID
 
 from foxengine.dsl.ast_nodes import And, Expr, Not, Or, Pred
+from foxengine.dsl.tag_query import (
+    combine_tag_positive,
+    compile_tag_keys_select,
+    contains_tag_pred,
+    flatten_and,
+    has_mixed_tag_or,
+    is_positive_tag_only,
+    is_tag_only,
+)
 
 FIELD_TO_COLUMN: dict[str, str | None] = {
     "full_name": "full_name",
@@ -42,6 +51,15 @@ class CompiledWhere:
     parameters: dict[str, Any]
 
 
+@dataclass
+class CompiledLeadsQuery:
+    """ClickHouse leads filter; tag_keys_select enables tag-first join plans."""
+
+    leads_where: str
+    parameters: dict[str, Any]
+    tag_keys_select: str | None = None
+
+
 class CompileError(Exception):
     pass
 
@@ -76,9 +94,7 @@ def _string_match(expr: str, mode: str, param_name: str) -> str:
     return f"position({expr}, {{{param_name}:String}}) > 0"
 
 
-def _extras_pred_sql(
-    field: str, mode: str, core: str, params: dict[str, Any]
-) -> str:
+def _extras_pred_sql(field: str, mode: str, core: str, params: dict[str, Any]) -> str:
     pn = _next_name(params, "ev")
     params[pn] = core
     value_match = _string_match("v", mode, pn)
@@ -173,12 +189,11 @@ def _pred_sql(
     return _string_match(col, mode, pn)
 
 
-def compile_expr(
+def _compile_expr_sql(
     expr: Expr,
     tag_uuid_lists: dict[tuple[str, str], list[UUID]],
-) -> CompiledWhere:
-    params: dict[str, Any] = {}
-
+    params: dict[str, Any],
+) -> str:
     def walk(e: Expr) -> str:
         if isinstance(e, Pred):
             return _pred_sql(e, params, tag_uuid_lists)
@@ -192,5 +207,69 @@ def compile_expr(
             return inner or "1 = 0"
         raise CompileError("unsupported expression")
 
-    sql = walk(expr)
+    return walk(expr)
+
+
+def _try_tag_first_compile(
+    expr: Expr,
+    tag_uuid_lists: dict[tuple[str, str], list[UUID]],
+    params: dict[str, Any],
+) -> CompiledLeadsQuery | None:
+    if has_mixed_tag_or(expr) or not contains_tag_pred(expr):
+        return None
+
+    if is_positive_tag_only(expr):
+        return CompiledLeadsQuery(
+            leads_where="1 = 1",
+            parameters=params,
+            tag_keys_select=compile_tag_keys_select(expr, tag_uuid_lists, params),
+        )
+
+    parts = flatten_and(expr)
+    tag_positive: list[Expr] = []
+    leads_parts: list[Expr] = []
+    for part in parts:
+        if isinstance(part, Not) and is_tag_only(part.inner):
+            leads_parts.append(part)
+        elif is_positive_tag_only(part):
+            tag_positive.append(part)
+        else:
+            leads_parts.append(part)
+
+    if not tag_positive:
+        return None
+
+    tag_expr = combine_tag_positive(tag_positive)
+    leads_where = "1 = 1"
+    if leads_parts:
+        if len(leads_parts) == 1:
+            leads_where = _compile_expr_sql(leads_parts[0], tag_uuid_lists, params)
+        else:
+            leads_where = _compile_expr_sql(And(leads_parts), tag_uuid_lists, params)
+
+    return CompiledLeadsQuery(
+        leads_where=leads_where,
+        parameters=params,
+        tag_keys_select=compile_tag_keys_select(tag_expr, tag_uuid_lists, params),
+    )
+
+
+def compile_leads_query(
+    expr: Expr,
+    tag_uuid_lists: dict[tuple[str, str], list[UUID]],
+) -> CompiledLeadsQuery:
+    params: dict[str, Any] = {}
+    tag_first = _try_tag_first_compile(expr, tag_uuid_lists, params)
+    if tag_first is not None:
+        return tag_first
+    sql = _compile_expr_sql(expr, tag_uuid_lists, params)
+    return CompiledLeadsQuery(leads_where=sql, parameters=params, tag_keys_select=None)
+
+
+def compile_expr(
+    expr: Expr,
+    tag_uuid_lists: dict[tuple[str, str], list[UUID]],
+) -> CompiledWhere:
+    params: dict[str, Any] = {}
+    sql = _compile_expr_sql(expr, tag_uuid_lists, params)
     return CompiledWhere(sql=sql, parameters=params)

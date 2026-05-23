@@ -105,7 +105,7 @@ export function ExportModal({ open, onClose, dsl, onQueued }: ExportModalProps) 
         </div>
         {err ? <p className="error">{err}</p> : null}
         <div className="btn-row">
-          <button type="submit" disabled={busy || !dsl.trim()}>
+          <button type="submit" disabled={busy}>
             {busy ? "Queueing…" : "Queue export"}
           </button>
           <button type="button" className="secondary" onClick={handleClose} disabled={busy}>

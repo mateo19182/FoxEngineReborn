@@ -8,6 +8,8 @@ Create Date: 2026-05-18
 import sqlalchemy as sa
 from alembic import op
 
+from foxengine.db.migration_helpers import table_exists
+
 revision = "004"
 down_revision = "003"
 branch_labels = None
@@ -15,6 +17,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if table_exists("saved_views"):
+        return
     op.create_table(
         "saved_views",
         sa.Column("id", sa.UUID(), nullable=False),

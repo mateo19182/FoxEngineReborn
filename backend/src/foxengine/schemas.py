@@ -348,6 +348,12 @@ class IngestPreviewResponse(BaseModel):
     files: list[IngestPreviewFile]
 
 
+class IngestPreviewDelimiterRequest(BaseModel):
+    upload_id: str = Field(min_length=1)
+    inner_name: str = Field(min_length=1)
+    csv_delimiter: str = Field(min_length=1, max_length=1)
+
+
 class IngestQueuedItemResponse(BaseModel):
     batch_id: str
     job_id: str

@@ -11,8 +11,8 @@ export function DslHelpModal({ open, onClose }: DslHelpModalProps) {
       <div className="dsl-help">
         <p className="hint" style={{ marginTop: 0 }}>
           Queries use <code>field:value</code> predicates combined with <code>AND</code>, <code>OR</code>, and{" "}
-          <code>NOT</code>. Use parentheses to group clauses. This page previews up to 50 rows; exports use the same DSL
-          for the full match set.
+          <code>NOT</code>. Use parentheses to group clauses. Leave the DSL empty and run to list all leads (newest
+          first). This page previews up to 50 rows; exports use the same DSL for the full match set.
         </p>
 
         <h3>Field matching</h3>

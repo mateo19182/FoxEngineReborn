@@ -8,6 +8,13 @@ Create Date: 2026-05-18
 import sqlalchemy as sa
 from alembic import op
 
+from foxengine.db.migration_helpers import (
+    column_exists,
+    foreign_key_exists,
+    index_exists,
+    table_exists,
+)
+
 revision = "005"
 down_revision = "004"
 branch_labels = None
@@ -15,29 +22,33 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "tag_families",
-        sa.Column("id", sa.UUID(), nullable=False),
-        sa.Column("code", sa.Text(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("code", name="uq_tag_families_code"),
-    )
-    op.add_column("tags", sa.Column("family_id", sa.UUID(), nullable=True))
-    op.create_index("ix_tags_family_id", "tags", ["family_id"], unique=False)
-    op.create_foreign_key(
-        "fk_tags_family_id",
-        "tags",
-        "tag_families",
-        ["family_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    if not table_exists("tag_families"):
+        op.create_table(
+            "tag_families",
+            sa.Column("id", sa.UUID(), nullable=False),
+            sa.Column("code", sa.Text(), nullable=False),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("code", name="uq_tag_families_code"),
+        )
+    if not column_exists("tags", "family_id"):
+        op.add_column("tags", sa.Column("family_id", sa.UUID(), nullable=True))
+    if not index_exists("tags", "ix_tags_family_id"):
+        op.create_index("ix_tags_family_id", "tags", ["family_id"], unique=False)
+    if not foreign_key_exists("tags", "fk_tags_family_id"):
+        op.create_foreign_key(
+            "fk_tags_family_id",
+            "tags",
+            "tag_families",
+            ["family_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
     op.execute(
         """
