@@ -29,20 +29,22 @@ def normalize_phone(
         return "", raw_s
 
 
-def identity_key(
+def identity_facet_tuples(
     phone_norm: str, email_norm: str, username: str, id_card: str
-) -> str:
+) -> list[tuple[str, str]]:
+    """Return (identity_kind, identity_value) pairs for lead_identities indexing."""
+    facets: list[tuple[str, str]] = []
     if email_norm:
-        return f"e:{email_norm}"
+        facets.append(("email", email_norm))
     if phone_norm:
-        return f"p:{phone_norm}"
+        facets.append(("phone", phone_norm))
     u = (username or "").strip()
     if u:
-        return f"u:{u.lower()}"
+        facets.append(("username", u.lower()))
     c = (id_card or "").strip()
     if c:
-        return f"i:{c}"
-    return ""
+        facets.append(("id_card", c))
+    return facets
 
 
 def row_dedup_key(row: dict[str, Any]) -> str:

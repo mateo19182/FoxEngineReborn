@@ -4,10 +4,15 @@ import {
   createSavedView,
   deleteSavedView,
   listSavedViews,
+  listDslFields,
+  listTagFamilies,
   patchSavedView,
+  type DslField,
   type QueryView,
   type SavedView,
+  type TagFamily,
 } from "./api";
+import { DslTextarea } from "./DslTextarea";
 import { DslHelpModal } from "./DslHelpModal";
 import { ExportModal } from "./ExportModal";
 import { ConfirmModal } from "./ConfirmModal";
@@ -46,6 +51,8 @@ export function QueryPage() {
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   const [tags, setTags] = useState<Tag[]>([]);
+  const [families, setFamilies] = useState<TagFamily[]>([]);
+  const [dslFields, setDslFields] = useState<DslField[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [addTagOpen, setAddTagOpen] = useState(false);
   const [familiesOpen, setFamiliesOpen] = useState(false);
@@ -85,12 +92,16 @@ export function QueryPage() {
   const nlUi = me?.llm_nl_enabled !== false;
 
   async function loadPageData() {
-    const [t, m, views] = await Promise.all([
+    const [t, f, fields, m, views] = await Promise.all([
       api<Tag[]>("/tags"),
+      listTagFamilies(),
+      listDslFields(),
       api<Me>("/auth/me"),
       listSavedViews(),
     ]);
     setTags(t);
+    setFamilies(f);
+    setDslFields(fields);
     setMe(m);
     setSavedViews(views);
     setSelectedSavedViewId((prev) => {
@@ -203,8 +214,7 @@ export function QueryPage() {
     }
   }
 
-  async function run(e: React.FormEvent) {
-    e.preventDefault();
+  async function executeQuery() {
     setErr(null);
     setExportMsg(null);
     setLoading(true);
@@ -219,6 +229,11 @@ export function QueryPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function run(e: React.FormEvent) {
+    e.preventDefault();
+    await executeQuery();
   }
 
   const panelErr =
@@ -259,7 +274,17 @@ export function QueryPage() {
                 </button>
               </span>
             </div>
-            <textarea id="q-dsl" rows={4} value={dsl} onChange={(e) => setDsl(e.target.value)} required />
+            <DslTextarea
+              id="q-dsl"
+              rows={4}
+              value={dsl}
+              onChange={setDsl}
+              onRun={() => void executeQuery()}
+              required
+              tags={tags}
+              families={families}
+              fields={dslFields}
+            />
           </div>
           {panelErr}
           <div className="btn-row query-actions">

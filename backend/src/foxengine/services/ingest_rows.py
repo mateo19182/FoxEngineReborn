@@ -9,7 +9,7 @@ from uuid import UUID
 
 from foxengine.services.identity import (
     has_any_identity,
-    identity_key,
+    identity_facet_tuples,
     normalize_email,
     normalize_phone,
     row_dedup_key,
@@ -19,7 +19,6 @@ CH_INSERT_COLUMNS = [
     "batch_id",
     "row_in_batch",
     "ingest_ts",
-    "identity_key",
     "phone_norm",
     "phone_raw",
     "email_norm",
@@ -140,7 +139,6 @@ def materialize_lead_row(
     if not has_any_identity(phone_norm, email_norm, username, id_card):
         return RowOutcome.rejected, None, "missing identity", str(raw)[:8000]
 
-    ikey = identity_key(phone_norm, email_norm, username, id_card)
     built: dict[str, Any] = {
         "phone_norm": phone_norm,
         "phone_raw": phone_raw or _as_str(raw.get("phone")),
@@ -175,7 +173,6 @@ def materialize_lead_row(
         str(batch_id),
         row_in_batch,
         ingest_ts,
-        ikey,
         built["phone_norm"],
         built["phone_raw"],
         built["email_norm"],
@@ -207,23 +204,14 @@ def materialize_identity_rows(lead_row: list[Any]) -> list[list[Any]]:
     batch_id = lead_row[0]
     row_in_batch = lead_row[1]
     ingest_ts = lead_row[2]
-    identity_key_value = str(lead_row[3])
-    phone_norm = str(lead_row[4])
-    email_norm = str(lead_row[6])
-    username = str(lead_row[8]).strip().lower()
-    id_card = str(lead_row[9]).strip()
+    phone_norm = str(lead_row[3])
+    email_norm = str(lead_row[5])
+    username = str(lead_row[7])
+    id_card = str(lead_row[8])
 
-    identities = [
-        ("identity_key", identity_key_value),
-        ("phone", phone_norm),
-        ("email", email_norm),
-        ("username", username),
-        ("id_card", id_card),
-    ]
     return [
         [kind, value, batch_id, row_in_batch, ingest_ts]
-        for kind, value in identities
-        if value
+        for kind, value in identity_facet_tuples(phone_norm, email_norm, username, id_card)
     ]
 
 

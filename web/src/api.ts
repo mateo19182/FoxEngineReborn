@@ -61,6 +61,15 @@ export type TagFamily = {
   created_at: string;
 };
 
+export type DslField = {
+  name: string;
+  detail: string;
+};
+
+export function listDslFields() {
+  return api<DslField[]>("/dsl/fields");
+}
+
 export type SavedView = {
   id: string;
   name: string;

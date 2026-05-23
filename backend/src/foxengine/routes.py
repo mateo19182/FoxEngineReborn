@@ -48,6 +48,7 @@ from foxengine.services.ingest import ingest_sync
 from foxengine.services.deleted_batches import batch_clickhouse_counts, deleted_batch_sql_clause
 from foxengine.services.job_queries import compile_leads_where, leads_select_sql
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, llm_health_status
+from foxengine.dsl.fields import DSL_FIELD_SPECS
 from foxengine.services.nl_to_dsl import translate_nl_to_dsl
 from foxengine.services.related_rows import annotate_related_groups, collect_identity_values
 from foxengine.settings_store import (
@@ -709,6 +710,11 @@ async def index(
         details=result,
     )
     return result
+
+
+@router.get("/dsl/fields", response_model=list[schemas.DslFieldOut])
+async def list_dsl_fields(_principal: ViewerDep) -> list[schemas.DslFieldOut]:
+    return [schemas.DslFieldOut(name=spec.name, detail=spec.detail) for spec in DSL_FIELD_SPECS]
 
 
 @router.post("/query")

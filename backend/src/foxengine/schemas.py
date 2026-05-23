@@ -48,6 +48,11 @@ class MeResponse(BaseModel):
     llm_nl_enabled: bool = True
 
 
+class DslFieldOut(BaseModel):
+    name: str
+    detail: str
+
+
 class PasswordChangeRequest(BaseModel):
     current_password: str
     new_password: str = Field(min_length=8, max_length=256)

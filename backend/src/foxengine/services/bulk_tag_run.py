@@ -18,7 +18,7 @@ from foxengine.db.models import Job
 from foxengine.db.session import get_session_factory
 from foxengine.services.identity import (
     has_any_identity,
-    identity_key,
+    identity_facet_tuples,
     normalize_email,
     normalize_phone,
 )
@@ -92,7 +92,9 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
                 return str(row[col]).strip()
         return ""
 
-    keys_from_csv: list[str] = []
+    row_facets: list[list[tuple[str, str]]] = []
+    facet_set: list[tuple[str, str]] = []
+    seen_facets: set[tuple[str, str]] = set()
     for row in reader:
         email = pick(row, "email", "email_norm")
         phone = pick(row, "phone", "phone_norm", "phone_raw")
@@ -104,27 +106,30 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
         ic = id_card.strip()
         if not has_any_identity(pn, en, u, ic):
             continue
-        ik = identity_key(pn, en, u, ic)
-        if ik:
-            keys_from_csv.append(ik)
+        facets = identity_facet_tuples(pn, en, u, ic)
+        row_facets.append(facets)
+        for facet in facets:
+            if facet not in seen_facets:
+                seen_facets.add(facet)
+                facet_set.append(facet)
 
-    unique_keys = list(dict.fromkeys(keys_from_csv))
+    unique_facets = facet_set
     ch = await get_ch_client()
-    existing: set[str] = set()
+    matched_facets: set[tuple[str, str]] = set()
     matched_rows: set[tuple[str, int]] = set()
-    chunk_size = 10_000
-    for i in range(0, len(unique_keys), chunk_size):
-        chunk = unique_keys[i : i + chunk_size]
+    # Tuple IN batches: keeps ClickHouse query size and memory predictable.
+    chunk_size = 5_000
+    for i in range(0, len(unique_facets), chunk_size):
+        chunk = unique_facets[i : i + chunk_size]
         q = (
-            "SELECT identity_value, batch_id, row_in_batch "
+            "SELECT identity_kind, identity_value, batch_id, row_in_batch "
             "FROM lead_identities "
-            "WHERE identity_kind = 'identity_key' "
-            "AND has({keys:Array(String)}, identity_value)"
+            "WHERE (identity_kind, identity_value) IN {pairs:Array(Tuple(String, String))}"
         )
-        qr = await ch.query(q, parameters={"keys": chunk})
+        qr = await ch.query(q, parameters={"pairs": chunk})
         for row in qr.result_rows:
-            existing.add(str(row[0]))
-            matched_rows.add((str(row[1]), int(row[2])))
+            matched_facets.add((str(row[0]), str(row[1])))
+            matched_rows.add((str(row[2]), int(row[3])))
 
     assigned_at = datetime.now(UTC).replace(tzinfo=None)
     tag_rows = [
@@ -139,8 +144,25 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
             column_names=CH_TAG_INSERT_COLUMNS,
         )
 
-    unmatched_keys = [k for k in unique_keys if k not in existing]
-    unmatched_body = ("identity_key\n" + "\n".join(unmatched_keys) + "\n").encode("utf-8")
+    def facets_to_csv_columns(facets: list[tuple[str, str]]) -> tuple[str, str, str, str]:
+        by_kind = dict(facets)
+        return (
+            by_kind.get("email", ""),
+            by_kind.get("phone", ""),
+            by_kind.get("username", ""),
+            by_kind.get("id_card", ""),
+        )
+
+    unmatched_rows = [
+        facets_to_csv_columns(facets)
+        for facets in row_facets
+        if not any(f in matched_facets for f in facets)
+    ]
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["email", "phone", "username", "id_card"])
+    writer.writerows(unmatched_rows)
+    unmatched_body = buf.getvalue().encode("utf-8")
     ukey = f"exports/{job_id}/unmatched.csv"
     up_session = aioboto3.Session()
     async with up_session.client(
@@ -159,12 +181,12 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
             .values(
                 state="done",
                 finished_at=datetime.now(UTC),
-                processed_rows=len(unique_keys),
+                processed_rows=len(row_facets),
                 result_uri=f"s3://{s.s3_bucket_exports}/{ukey}",
                 checkpoint={
                     **ck,
                     "matched_rows": len(matched_rows),
-                    "unmatched_rows": len(unmatched_keys),
+                    "unmatched_rows": len(unmatched_rows),
                     "unmatched_key": ukey,
                 },
             )

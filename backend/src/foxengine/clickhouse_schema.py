@@ -4,7 +4,6 @@ CREATE TABLE IF NOT EXISTS leads (
     batch_id UUID,
     row_in_batch UInt32,
     ingest_ts DateTime DEFAULT now(),
-    identity_key String,
 
     phone_norm String,
     phone_raw String,

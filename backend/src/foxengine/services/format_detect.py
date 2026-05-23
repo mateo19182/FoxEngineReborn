@@ -9,31 +9,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from foxengine.dsl.fields import INGEST_CANONICAL_FIELDS
+
 FormatName = Literal["jsonl", "csv", "combo"]
 
-# Canonical ingest field names (subset we map from headers)
-CANONICAL_FIELDS = (
-    "phone",
-    "email",
-    "username",
-    "id_card",
-    "full_name",
-    "first_name",
-    "last_name",
-    "dob",
-    "gender",
-    "address",
-    "city",
-    "country",
-    "zip",
-    "ip",
-    "user_agent",
-    "isp",
-    "phone_carrier",
-    "password",
-    "password_hash",
-    "last_seen",
-)
+CANONICAL_FIELDS = INGEST_CANONICAL_FIELDS
 CANONICAL = frozenset(CANONICAL_FIELDS)
 
 _HEADER_ALIASES: dict[str, tuple[str, float]] = {

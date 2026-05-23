@@ -3,38 +3,37 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-IDENTITY_FIELD_PREFIXES = (
-    ("email_norm", "e"),
-    ("phone_norm", "p"),
-    ("username", "u"),
-    ("id_card", "i"),
-)
+from foxengine.services.identity import identity_facet_tuples
+
+_KIND_TO_ROW_FIELD = {
+    "email": "email_norm",
+    "phone": "phone_norm",
+    "username": "username",
+    "id_card": "id_card",
+}
+
+
+def _row_identity_inputs(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    phone = str(row.get("phone_norm") or "").strip()
+    email = str(row.get("email_norm") or "").strip()
+    username = str(row.get("username") or "").strip()
+    id_card = str(row.get("id_card") or "").strip()
+    return phone, email, username, id_card
 
 
 def identity_facets(row: dict[str, Any]) -> list[str]:
-    facets: list[str] = []
-    for field, prefix in IDENTITY_FIELD_PREFIXES:
-        raw = row.get(field)
-        value = str(raw).strip() if raw is not None else ""
-        if not value:
-            continue
-        if field == "username":
-            value = value.lower()
-        facets.append(f"{prefix}:{value}")
-    return facets
+    """Stable facet keys for union-find (kind:value, aligned with lead_identities)."""
+    phone, email, username, id_card = _row_identity_inputs(row)
+    facets = identity_facet_tuples(phone, email, username, id_card)
+    return [f"{kind}:{value}" for kind, value in facets]
 
 
 def collect_identity_values(rows: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
-    values: dict[str, set[str]] = {field: set() for field, _ in IDENTITY_FIELD_PREFIXES}
+    values: dict[str, set[str]] = {col: set() for col in _KIND_TO_ROW_FIELD.values()}
     for row in rows:
-        for field, _ in IDENTITY_FIELD_PREFIXES:
-            raw = row.get(field)
-            value = str(raw).strip() if raw is not None else ""
-            if not value:
-                continue
-            if field == "username":
-                value = value.lower()
-            values[field].add(value)
+        phone, email, username, id_card = _row_identity_inputs(row)
+        for kind, value in identity_facet_tuples(phone, email, username, id_card):
+            values[_KIND_TO_ROW_FIELD[kind]].add(value)
     return {field: sorted(field_values) for field, field_values in values.items()}
 
 

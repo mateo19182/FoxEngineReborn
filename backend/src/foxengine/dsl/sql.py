@@ -29,7 +29,6 @@ FIELD_TO_COLUMN: dict[str, str | None] = {
 }
 
 IDENTITY_FIELD_TO_KIND = {
-    "identity_key": "identity_key",
     "phone": "phone",
     "email": "email",
     "username": "username",
@@ -67,14 +66,40 @@ def _split_value(raw: str) -> tuple[str, str]:
     return "exact", raw
 
 
-def _match_sql(col: str, mode: str, param_name: str) -> str:
+def _string_match(expr: str, mode: str, param_name: str) -> str:
     if mode == "exact":
-        return f"{col} = {{{param_name}:String}}"
+        return f"{expr} = {{{param_name}:String}}"
     if mode == "prefix":
-        return f"startsWith({col}, {{{param_name}:String}})"
+        return f"startsWith({expr}, {{{param_name}:String}})"
     if mode == "suffix":
-        return f"endsWith({col}, {{{param_name}:String}})"
-    return f"position({col}, {{{param_name}:String}}) > 0"
+        return f"endsWith({expr}, {{{param_name}:String}})"
+    return f"position({expr}, {{{param_name}:String}}) > 0"
+
+
+def _extras_pred_sql(
+    field: str, mode: str, core: str, params: dict[str, Any]
+) -> str:
+    pn = _next_name(params, "ev")
+    params[pn] = core
+    value_match = _string_match("v", mode, pn)
+
+    if field == "extras":
+        return f"arrayExists(v -> {value_match}, mapValues(extras))"
+
+    if field.startswith("extras."):
+        subkey = field[len("extras.") :]
+        if not subkey:
+            raise CompileError("extras subkey must not be empty")
+        ek = _next_name(params, "ek")
+        params[ek] = subkey
+        keyed_match = _string_match("v", mode, pn)
+        return (
+            "arrayExists("
+            f"(k, v) -> lowerUTF8(k) = {{{ek}:String}} AND {keyed_match}, "
+            "mapKeys(extras), mapValues(extras))"
+        )
+
+    raise CompileError(f"unknown field {field!r}")
 
 
 def _lead_key_in(table: str, where_sql: str) -> str:
@@ -111,7 +136,7 @@ def _pred_sql(
     if identity_kind:
         pn = _next_name(params, "iv")
         params[pn] = core.lower() if field == "username" else core
-        value_predicate = _match_sql("identity_value", mode, pn)
+        value_predicate = _string_match("identity_value", mode, pn)
         return _lead_key_in(
             "lead_identities",
             f"identity_kind = '{identity_kind}' AND {value_predicate}",
@@ -125,6 +150,9 @@ def _pred_sql(
             "lead_identities",
             f"identity_kind = 'phone' AND startsWith(identity_value, {{{pn}:String}})",
         )
+
+    if field == "extras" or field.startswith("extras."):
+        return _extras_pred_sql(field, mode, core, params)
 
     if not col:
         raise CompileError(f"unknown field {field!r}")
@@ -142,7 +170,7 @@ def _pred_sql(
     pn = _next_name(params, "v")
     params[pn] = core
 
-    return _match_sql(col, mode, pn)
+    return _string_match(col, mode, pn)
 
 
 def compile_expr(

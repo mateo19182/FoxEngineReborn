@@ -65,12 +65,54 @@ export function DslHelpModal({ open, onClose }: DslHelpModalProps) {
 
         <h3>Lead fields</h3>
         <p className="hint">
-          identity_key, phone, email, username, id_card, full_name, first_name, last_name, dob, gender, address, city,
-          country, zip, ip, user_agent, isp, phone_carrier, password, password_hash, last_seen
+          phone, email, username, id_card, full_name, first_name, last_name, dob, gender, address, city, country, zip, ip,
+          user_agent, isp, phone_carrier, password, password_hash, last_seen
         </p>
         <p className="hint" style={{ marginTop: "0.35rem" }}>
-          <code className="mono">identity_key</code> is the stored priority key from ingest (email, then phone, then
-          username, then id_card). The Related view links rows using all four identity fields.
+          Identity predicates match via the identity index. The Related view links rows that share any of phone, email,
+          username, or id card.
+        </p>
+
+        <h3>Extras (unmapped columns)</h3>
+        <p className="hint">
+          CSV columns not mapped to a canonical field are stored in <code className="mono">extras</code>. Search
+          any value without knowing the header name:
+        </p>
+        <table className="dsl-help__table">
+          <thead>
+            <tr>
+              <th>Goal</th>
+              <th>Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Exact value in any extra column</td>
+              <td className="mono">
+                <code>extras:Acme Corp</code>
+              </td>
+            </tr>
+            <tr>
+              <td>Substring in any extra value</td>
+              <td className="mono">
+                <code>extras:*linkedin*</code>
+              </td>
+            </tr>
+            <tr>
+              <td>One known extra column (DSL-safe header)</td>
+              <td className="mono">
+                <code>extras.company:Acme</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p className="hint">
+          Same wildcard rules as other string fields. Headers with spaces or special characters are only searchable
+          via <code className="mono">extras:</code>, not <code className="mono">extras.key:</code>.
+        </p>
+        <p className="hint">
+          <code className="mono">extras:</code> scans every value in the map on each lead row and can be slower than
+          indexed identity or column predicates on large datasets.
         </p>
 
         <h3>Tags</h3>

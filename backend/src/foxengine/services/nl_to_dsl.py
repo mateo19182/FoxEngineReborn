@@ -8,33 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from foxengine.db.models import Tag, TagFamily
+from foxengine.dsl.fields import TAG_FIELDS, dsl_query_field_names
 from foxengine.dsl.parser import parse_dsl
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, chat_completion
-
-CANONICAL_FIELDS = (
-    "phone",
-    "email",
-    "username",
-    "id_card",
-    "full_name",
-    "first_name",
-    "last_name",
-    "dob",
-    "gender",
-    "address",
-    "city",
-    "country",
-    "zip",
-    "ip",
-    "user_agent",
-    "isp",
-    "phone_carrier",
-    "password",
-    "password_hash",
-    "last_seen",
-)
-
-TAG_FIELDS = ("tag", "tag.family", "tag.breach_date")
 
 _SYSTEM_TEMPLATE = """You translate natural-language search requests into FoxEngine DSL.
 
@@ -59,6 +35,8 @@ Examples:
 - phone numbers in Spain → phone.country:+34
 - john usernames → username:john*
 - ticketmaster leak tagged → tag:Ticketmaster-VM
+- linkedin mentioned in any unmapped CSV column → extras:*linkedin*
+- company name Acme in extra fields → extras:Acme OR extras:*Acme*
 """
 
 
@@ -89,7 +67,7 @@ async def _tag_lines(session: AsyncSession) -> str:
 
 
 def build_system_prompt(tag_block: str) -> str:
-    fields = ", ".join(CANONICAL_FIELDS)
+    fields = ", ".join(dsl_query_field_names())
     tag_fields = ", ".join(TAG_FIELDS)
     return _SYSTEM_TEMPLATE.format(
         fields=fields,
