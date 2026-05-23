@@ -3,8 +3,8 @@ import type { DateRange } from "react-day-picker";
 import {
   api,
   batchDeletePreview,
+  deleteBatch,
   listBatches,
-  softDeleteBatch,
   type BatchAdmin,
   type BatchDeletePreview,
 } from "./api";
@@ -92,9 +92,9 @@ export function AdminPage() {
   const [newKey, setNewKey] = useState<string | null>(null);
 
   const [batches, setBatches] = useState<BatchAdmin[]>([]);
-  const [deletedBatches, setDeletedBatches] = useState<BatchAdmin[]>([]);
   const [batchPreview, setBatchPreview] = useState<BatchDeletePreview | null>(null);
   const [batchDeleteBusy, setBatchDeleteBusy] = useState(false);
+  const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
 
   function auditQuerySummary(row: AuditRow): string | null {
     if (row.action === "query.nl_translate") {
@@ -245,9 +245,8 @@ export function AdminPage() {
   }
 
   async function loadBatches() {
-    const [active, deleted] = await Promise.all([listBatches(false), listBatches(true)]);
+    const active = await listBatches(false);
     setBatches(active.filter((b) => !b.deleted_at));
-    setDeletedBatches(deleted.filter((b) => b.deleted_at));
   }
 
   useEffect(() => {
@@ -271,6 +270,7 @@ export function AdminPage() {
     setModal(null);
     setErr(null);
     setBatchPreview(null);
+    setDeleteJobId(null);
   }
 
   function openCreateUser() {
@@ -374,10 +374,10 @@ export function AdminPage() {
     setBatchDeleteBusy(true);
     setErr(null);
     try {
-      await softDeleteBatch(batchPreview.batch.id);
-      closeModal();
-      setBatchPreview(null);
+      const r = await deleteBatch(batchPreview.batch.id);
+      setDeleteJobId(r.job_id);
       await loadBatches();
+      if (!r.job_id) closeModal();
     } catch (ex) {
       setErr(String(ex));
     } finally {
@@ -472,7 +472,7 @@ export function AdminPage() {
           <h2>Ingest batches</h2>
         </div>
         <p className="hint" style={{ marginTop: 0 }}>
-          Soft-delete hides a batch from search and exports. Data stays in ClickHouse (no physical purge).
+          Delete hides the batch from search and queues removal of its rows from ClickHouse.
         </p>
         {batches.length === 0 ? (
           <p className="hint">No active batches.</p>
@@ -506,31 +506,6 @@ export function AdminPage() {
             </table>
           </div>
         )}
-        {deletedBatches.length > 0 ? (
-          <>
-            <h3 style={{ marginTop: "1.25rem" }}>Deleted batches</h3>
-            <div style={{ overflowX: "auto" }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>File</th>
-                    <th>Deleted</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {deletedBatches.map((b) => (
-                    <tr key={b.id}>
-                      <td>{b.name ?? b.id.slice(0, 8)}</td>
-                      <td>{b.source_filename ?? "—"}</td>
-                      <td className="muted">{b.deleted_at}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : null}
       </section>
 
       <section className="panel">
@@ -797,13 +772,18 @@ export function AdminPage() {
                 Tags on batch: <span className="mono">{batchPreview.tag_names.join(", ")}</span>
               </p>
             ) : null}
-            {batchPreview.reingest_warning ? (
-              <p className="error" style={{ marginBottom: 0 }}>
-                {batchPreview.reingest_warning}
+            <p className="hint">
+              This removes the batch from search and deletes its rows from ClickHouse (background job when the dataset
+              is non-empty).
+            </p>
+            {deleteJobId ? (
+              <p className="hint">
+                Purge queued: <span className="mono">{deleteJobId}</span>. Monitor on the Jobs page, then close this
+                dialog.
               </p>
             ) : null}
             {batchPreview.already_deleted ? (
-              <p className="hint">This batch is already soft-deleted.</p>
+              <p className="hint">This batch is already deleted.</p>
             ) : (
               <div className="btn-row">
                 <button type="button" disabled={batchDeleteBusy} onClick={() => void confirmDeleteBatch()}>
@@ -817,6 +797,7 @@ export function AdminPage() {
           </>
         )}
       </Modal>
+
     </div>
   );
 }

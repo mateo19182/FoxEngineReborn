@@ -396,6 +396,7 @@ class BatchOut(BaseModel):
 class BatchAdminOut(BatchOut):
     source_sha256: str | None = None
     deleted_at: str | None = None
+    purged_at: str | None = None
 
 
 class BatchDeletePreview(BaseModel):
@@ -403,7 +404,11 @@ class BatchDeletePreview(BaseModel):
     tag_names: list[str] = Field(default_factory=list)
     clickhouse_rows: dict[str, int] = Field(default_factory=dict)
     already_deleted: bool = False
-    reingest_warning: str | None = None
+
+
+class BatchDeleteResponse(BaseModel):
+    status: str
+    job_id: str | None = None
 
 
 class UploadBrowseEntry(BaseModel):

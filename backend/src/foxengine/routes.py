@@ -45,6 +45,7 @@ from foxengine.services.format_detect import (
     detect_for_ingest,
 )
 from foxengine.services.ingest import ingest_sync
+from foxengine.services.batch_purge import schedule_batch_purge
 from foxengine.services.deleted_batches import batch_clickhouse_counts, deleted_batch_sql_clause
 from foxengine.services.job_queries import compile_leads_where, leads_select_sql
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, llm_health_status
@@ -57,7 +58,12 @@ from foxengine.settings_store import (
     read_jwt_secret,
     write_jwt_secret,
 )
-from foxengine.tasks import foxengine_bulk_tag, foxengine_export, foxengine_ingest_file
+from foxengine.tasks import (
+    foxengine_bulk_tag,
+    foxengine_export,
+    foxengine_ingest_file,
+    foxengine_purge_batch,
+)
 
 router = APIRouter()
 
@@ -1446,6 +1452,7 @@ def _batch_admin_out(b: Batch) -> schemas.BatchAdminOut:
         ingest_ts=b.ingest_ts.isoformat(),
         source_sha256=b.source_sha256,
         deleted_at=b.deleted_at.isoformat() if b.deleted_at is not None else None,
+        purged_at=b.purged_at.isoformat() if b.purged_at is not None else None,
     )
 
 
@@ -1510,46 +1517,60 @@ async def batch_delete_preview(
     ch = await get_ch_client()
     ch_counts = await batch_clickhouse_counts(ch, batch_id)
     tag_names = await _tag_names_for_batch(session, batch_id)
-    already_deleted = b.deleted_at is not None
-    reingest_warning: str | None = None
-    if ch_counts.get("leads", 0) > 0:
-        reingest_warning = (
-            "Lead rows remain in ClickHouse. After soft-delete they are hidden from search, "
-            "but re-ingesting the same file can duplicate data until those rows are removed."
-        )
     return schemas.BatchDeletePreview(
         batch=_batch_admin_out(b),
         tag_names=tag_names,
         clickhouse_rows=ch_counts,
-        already_deleted=already_deleted,
-        reingest_warning=reingest_warning,
+        already_deleted=b.deleted_at is not None,
     )
 
 
-@router.delete("/batches/{batch_id}")
-async def soft_delete_batch(
+@router.delete("/batches/{batch_id}", response_model=schemas.BatchDeleteResponse)
+async def delete_batch(
     request: Request,
     batch_id: UUID,
     session: SessionDep,
     principal: AdminDep,
-) -> dict[str, str]:
+) -> schemas.BatchDeleteResponse:
     res = await session.execute(select(Batch).where(Batch.id == batch_id))
     b = res.scalar_one_or_none()
     if b is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+
+    ch = await get_ch_client()
+    purge_job_id: str | None = None
+
     if b.deleted_at is None:
         await session.execute(
             update(Batch).where(Batch.id == batch_id).values(deleted_at=datetime.now(UTC))
         )
-        await session.commit()
-        _audit(
-            request,
-            principal,
-            "batch.soft_delete",
-            target_kind="batch",
-            target_id=str(batch_id),
-        )
-    return {"status": "ok"}
+        await session.flush()
+        b.deleted_at = datetime.now(UTC)
+
+    purge_job_id = await schedule_batch_purge(
+        session,
+        ch,
+        batch_id=batch_id,
+        batch=b,
+        principal=principal,
+        request=request,
+        audit_fn=_audit,
+    )
+
+    _audit(
+        request,
+        principal,
+        "batch.delete",
+        target_kind="batch",
+        target_id=str(batch_id),
+        details={"purge_job_id": purge_job_id},
+    )
+    await session.commit()
+
+    if purge_job_id:
+        await foxengine_purge_batch.defer_async(job_id=purge_job_id)
+
+    return schemas.BatchDeleteResponse(status="ok", job_id=purge_job_id)
 
 
 @router.get("/batches/{batch_id}/rejections.csv")

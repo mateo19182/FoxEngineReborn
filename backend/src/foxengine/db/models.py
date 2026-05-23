@@ -159,6 +159,7 @@ class Batch(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Job(Base):

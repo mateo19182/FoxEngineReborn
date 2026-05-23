@@ -1,6 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, getToken, onUnauthorized } from "./api";
 import { DocTip } from "./DocTip";
+
+function jobTypeLabel(type: string): string {
+  switch (type) {
+    case "ingest_file":
+      return "Ingest";
+    case "export":
+      return "Export";
+    case "bulk_tag":
+      return "Bulk tag";
+    default:
+      return type;
+  }
+}
+
+function isIngestJob(type: string): boolean {
+  return type === "ingest_file";
+}
 
 type Job = {
   id: string;
@@ -65,6 +82,17 @@ async function downloadJob(id: string, filename: string) {
 export function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [typeFilter, setTypeFilter] = useState("");
+
+  const typeOptions = useMemo(() => {
+    const types = new Set(jobs.map((j) => j.type));
+    return [...types].sort((a, b) => jobTypeLabel(a).localeCompare(jobTypeLabel(b)));
+  }, [jobs]);
+
+  const filteredJobs = useMemo(
+    () => (typeFilter ? jobs.filter((j) => j.type === typeFilter) : jobs),
+    [jobs, typeFilter],
+  );
 
   async function load() {
     const j = await api<Job[]>("/jobs");
@@ -104,14 +132,37 @@ export function JobsPage() {
 
       {jobs.length > 0 && (
         <section className="panel">
-          <div className="panel__head">
+          <div className="panel__head" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: "0.75rem 1.1rem" }}>
             <h2>Queue</h2>
+            {typeOptions.length > 0 ? (
+              <div className="audit-toolbar" style={{ marginBottom: 0, marginLeft: "auto" }}>
+                <div className="audit-toolbar__field">
+                  <label htmlFor="jobs-type-filter">Kind</label>
+                  <select
+                    id="jobs-type-filter"
+                    value={typeFilter}
+                    onChange={(e) => setTypeFilter(e.target.value)}
+                  >
+                    <option value="">Any</option>
+                    {typeOptions.map((t) => (
+                      <option key={t} value={t}>
+                        {jobTypeLabel(t)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ) : null}
           </div>
+          {filteredJobs.length === 0 ? (
+            <p className="hint">No jobs match this filter.</p>
+          ) : (
           <div style={{ overflowX: "auto" }}>
             <table>
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Kind</th>
                   <th>File</th>
                   <th>Accepted</th>
                   <th>Rejected</th>
@@ -123,9 +174,10 @@ export function JobsPage() {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((j) => (
+                {filteredJobs.map((j) => (
                   <tr key={j.id}>
-                    <td>{j.batch_name ?? (j.type !== "ingest" ? j.id.slice(0, 8) : "")}</td>
+                    <td>{j.batch_name ?? (!isIngestJob(j.type) ? j.id.slice(0, 8) : "")}</td>
+                    <td>{jobTypeLabel(j.type)}</td>
                     <td>{j.source_filename ?? ""}</td>
                     <td>{j.accepted_rows ?? 0}</td>
                     <td>{j.rejected_rows ?? 0}</td>
@@ -151,7 +203,7 @@ export function JobsPage() {
                             Download
                           </button>
                         </span>
-                      ) : j.type === "ingest" && j.batch_id && j.rejected_rows && j.rejected_rows > 0 ? (
+                      ) : isIngestJob(j.type) && j.batch_id && j.rejected_rows && j.rejected_rows > 0 ? (
                         <span className="btn-with-tip">
                           <button
                             type="button"
@@ -169,6 +221,7 @@ export function JobsPage() {
               </tbody>
             </table>
           </div>
+          )}
         </section>
       )}
     </div>

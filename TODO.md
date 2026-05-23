@@ -7,6 +7,6 @@
 - test more data 
     - /mnt/data/stuff
 
-- allow deletes on batch? (soft-delete via Admin; no ClickHouse purge)
+- ~~allow deletes on batch?~~ (admin delete + ClickHouse purge job)
 
-- 
+- graph view for merged...

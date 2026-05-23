@@ -27,13 +27,24 @@ async def deleted_batch_sql_clause(session: AsyncSession) -> tuple[str, dict[str
     return " AND batch_id NOT IN (" + ", ".join(parts) + ")", params
 
 
+PURGE_TABLES_DELETE_ORDER: tuple[str, ...] = ("leads", "lead_identities", "lead_tags")
+
+
 async def batch_clickhouse_counts(ch: Any, batch_id: UUID) -> dict[str, int]:
-    tables = ("leads", "lead_identities", "lead_tags")
     out: dict[str, int] = {}
-    for table in tables:
+    for table in PURGE_TABLES_DELETE_ORDER:
         qr = await ch.query(
             f"SELECT count() FROM {table} WHERE batch_id = {{bid:UUID}}",
             parameters={"bid": batch_id},
         )
         out[table] = int(qr.first_row[0])
     return out
+
+
+async def lightweight_delete_batch_rows(ch: Any, batch_id: UUID) -> None:
+    """Issue lightweight DELETE FROM per insert-mutation-avoid-delete (not ALTER DELETE)."""
+    for table in PURGE_TABLES_DELETE_ORDER:
+        await ch.command(
+            f"DELETE FROM {table} WHERE batch_id = {{bid:UUID}}",
+            parameters={"bid": batch_id},
+        )

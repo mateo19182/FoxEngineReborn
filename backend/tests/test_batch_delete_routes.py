@@ -9,7 +9,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from foxengine.db.models import Batch
-from foxengine.routes import batch_delete_preview, list_batches, soft_delete_batch
+from foxengine.routes import batch_delete_preview, delete_batch, list_batches
 
 
 def _request():
@@ -61,6 +61,9 @@ class FakeSession:
     async def scalar(self, stmt):
         return self.scalar_row
 
+    async def flush(self):
+        pass
+
     async def commit(self):
         pass
 
@@ -73,23 +76,46 @@ class BatchDeleteRoutesTests(unittest.IsolatedAsyncioTestCase):
         self._orig_schedule_audit = routes_module.schedule_audit
         self._orig_get_ch = routes_module.get_ch_client
         self._orig_tag_names = routes_module._tag_names_for_batch
+        self._orig_schedule_purge = routes_module.schedule_batch_purge
+        self._orig_purge_defer = routes_module.foxengine_purge_batch.defer_async
+        self.deferred_job_ids: list[str] = []
         setattr(self._routes_module, "schedule_audit", lambda **_: None)
         setattr(self._routes_module, "_tag_names_for_batch", self._fake_tag_names)
+        setattr(self._routes_module, "schedule_batch_purge", self._fake_schedule_purge)
+        setattr(
+            self._routes_module.foxengine_purge_batch,
+            "defer_async",
+            self._fake_defer_async,
+        )
 
         class _Ch:
             async def query(self, _sql, *, parameters=None):
                 return SimpleNamespace(first_row=[0])
 
-        self._ch = _Ch()
-        setattr(self._routes_module, "get_ch_client", lambda: self._ch)
+        async def _get_ch():
+            return _Ch()
+
+        setattr(self._routes_module, "get_ch_client", _get_ch)
 
     def tearDown(self) -> None:
         setattr(self._routes_module, "schedule_audit", self._orig_schedule_audit)
         setattr(self._routes_module, "get_ch_client", self._orig_get_ch)
         setattr(self._routes_module, "_tag_names_for_batch", self._orig_tag_names)
+        setattr(self._routes_module, "schedule_batch_purge", self._orig_schedule_purge)
+        setattr(
+            self._routes_module.foxengine_purge_batch,
+            "defer_async",
+            self._orig_purge_defer,
+        )
 
     async def _fake_tag_names(self, _session, _batch_id):
         return ["tag-a"]
+
+    async def _fake_schedule_purge(self, *_args, **_kwargs):
+        return "job-1"
+
+    async def _fake_defer_async(self, *, job_id: str):
+        self.deferred_job_ids.append(job_id)
 
     def _batch(self, *, deleted: bool = False) -> Batch:
         return Batch(
@@ -114,10 +140,10 @@ class BatchDeleteRoutesTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(ctx.exception.status_code, 403)
 
-    async def test_soft_delete_batch_not_found(self):
+    async def test_delete_batch_not_found(self):
         session = FakeSession(execute_rows=[])
         with self.assertRaises(HTTPException) as ctx:
-            await soft_delete_batch(
+            await delete_batch(
                 _request(),
                 uuid4(),
                 cast(Any, session),
@@ -125,29 +151,20 @@ class BatchDeleteRoutesTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(ctx.exception.status_code, 404)
 
-    async def test_soft_delete_batch_ok(self):
+    async def test_delete_batch_queues_purge(self):
         batch = self._batch()
         session = FakeSession(execute_rows=[batch])
-        out = await soft_delete_batch(
+        out = await delete_batch(
             _request(),
             batch.id,
             cast(Any, session),
             cast(Any, _principal("admin")),
         )
-        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out.status, "ok")
+        self.assertEqual(out.job_id, "job-1")
+        self.assertEqual(self.deferred_job_ids, ["job-1"])
 
-    async def test_soft_delete_idempotent_when_already_deleted(self):
-        batch = self._batch(deleted=True)
-        session = FakeSession(execute_rows=[batch])
-        out = await soft_delete_batch(
-            _request(),
-            batch.id,
-            cast(Any, session),
-            cast(Any, _principal("admin")),
-        )
-        self.assertEqual(out["status"], "ok")
-
-    async def test_delete_preview_includes_warning_when_ch_rows(self):
+    async def test_delete_preview_returns_counts(self):
         batch = self._batch()
 
         class _ChWithRows:
@@ -167,5 +184,4 @@ class BatchDeleteRoutesTests(unittest.IsolatedAsyncioTestCase):
             cast(Any, _principal("admin")),
         )
         self.assertEqual(preview.clickhouse_rows["leads"], 5)
-        self.assertIsNotNone(preview.reingest_warning)
         self.assertEqual(preview.tag_names, ["tag-a"])

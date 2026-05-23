@@ -80,3 +80,16 @@ async def foxengine_bulk_tag(job_id: str) -> None:
         log.exception("bulk tag job failed")
         await _fail_job_state(jid, str(e))
         raise
+
+
+@pg_app.task(name="foxengine_purge_batch")
+async def foxengine_purge_batch(job_id: str) -> None:
+    from foxengine.services.batch_purge_run import run_batch_purge_job
+
+    jid = UUID(job_id)
+    try:
+        await run_batch_purge_job(jid)
+    except Exception as e:
+        log.exception("batch purge job failed")
+        await _fail_job_state(jid, str(e))
+        raise

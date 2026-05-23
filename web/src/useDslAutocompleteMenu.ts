@@ -28,6 +28,7 @@ export function useDslAutocompleteMenu({
   fields,
 }: UseDslAutocompleteMenuArgs) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [focused, setFocused] = useState(false);
   const [cursor, setCursor] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -49,12 +50,12 @@ export function useDslAutocompleteMenu({
   }, [completionCtx?.kind, completionCtx?.prefix, completionCtx?.field, menuOpen]);
 
   useEffect(() => {
-    if (suggestions.length === 0) {
+    if (!focused || suggestions.length === 0) {
       setMenuOpen(false);
       return;
     }
     setMenuOpen(true);
-  }, [suggestions]);
+  }, [focused, suggestions]);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
@@ -98,8 +99,20 @@ export function useDslAutocompleteMenu({
     setMenuOpen(false);
   }
 
+  function focusMenu() {
+    setFocused(true);
+  }
+
+  function blurMenu() {
+    setFocused(false);
+    closeMenu();
+  }
+
   return {
     textareaRef,
+    focused,
+    focusMenu,
+    blurMenu,
     menuOpen,
     activeIndex,
     setActiveIndex,

@@ -296,6 +296,17 @@
             ],
             "title": "Name"
           },
+          "purged_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purged At"
+          },
           "rejected_rows": {
             "title": "Rejected Rows",
             "type": "integer"
@@ -352,17 +363,6 @@
             "title": "Clickhouse Rows",
             "type": "object"
           },
-          "reingest_warning": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reingest Warning"
-          },
           "tag_names": {
             "items": {
               "type": "string"
@@ -375,6 +375,30 @@
           "batch"
         ],
         "title": "BatchDeletePreview",
+        "type": "object"
+      },
+      "BatchDeleteResponse": {
+        "properties": {
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "BatchDeleteResponse",
         "type": "object"
       },
       "BatchOut": {
@@ -597,6 +621,24 @@
           "canonical_fields"
         ],
         "title": "ColumnMapSuggestResponse",
+        "type": "object"
+      },
+      "DslFieldOut": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "detail"
+        ],
+        "title": "DslFieldOut",
         "type": "object"
       },
       "ExportRequest": {
@@ -2857,7 +2899,7 @@
     },
     "/api/batches/{batch_id}": {
       "delete": {
-        "operationId": "soft_delete_batch_api_batches__batch_id__delete",
+        "operationId": "delete_batch_api_batches__batch_id__delete",
         "parameters": [
           {
             "in": "path",
@@ -2891,11 +2933,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Soft Delete Batch Api Batches  Batch Id  Delete",
-                  "type": "object"
+                  "$ref": "#/components/schemas/BatchDeleteResponse"
                 }
               }
             },
@@ -2912,7 +2950,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Soft Delete Batch"
+        "summary": "Delete Batch"
       },
       "get": {
         "operationId": "get_batch_api_batches__batch_id__get",
@@ -3077,6 +3115,56 @@
           }
         },
         "summary": "Batch Rejections Csv"
+      }
+    },
+    "/api/dsl/fields": {
+      "get": {
+        "operationId": "list_dsl_fields_api_dsl_fields_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DslFieldOut"
+                  },
+                  "title": "Response List Dsl Fields Api Dsl Fields Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Dsl Fields"
       }
     },
     "/api/export": {

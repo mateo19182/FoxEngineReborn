@@ -124,6 +124,7 @@ export type BatchAdmin = {
   ingest_ts: string;
   source_sha256?: string | null;
   deleted_at?: string | null;
+  purged_at?: string | null;
 };
 
 export type BatchDeletePreview = {
@@ -131,7 +132,11 @@ export type BatchDeletePreview = {
   tag_names: string[];
   clickhouse_rows: Record<string, number>;
   already_deleted: boolean;
-  reingest_warning: string | null;
+};
+
+export type BatchDeleteResponse = {
+  status: string;
+  job_id: string | null;
 };
 
 export function listBatches(includeDeleted = false) {
@@ -143,6 +148,6 @@ export function batchDeletePreview(batchId: string) {
   return api<BatchDeletePreview>(`/batches/${batchId}/delete-preview`);
 }
 
-export function softDeleteBatch(batchId: string) {
-  return api<{ status: string }>(`/batches/${batchId}`, { method: "DELETE" });
+export function deleteBatch(batchId: string) {
+  return api<BatchDeleteResponse>(`/batches/${batchId}`, { method: "DELETE" });
 }

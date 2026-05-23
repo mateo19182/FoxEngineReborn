@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   api,
   createSavedView,
@@ -19,10 +20,16 @@ import { ConfirmModal } from "./ConfirmModal";
 import { Modal } from "./Modal";
 import { QueryNlModal } from "./QueryNlModal";
 import { SavedViewsModal } from "./SavedViewsModal";
-import { TagAddModal } from "./TagAddModal";
-import { TagFamiliesModal } from "./TagFamiliesModal";
-import { TagsModal } from "./TagsModal";
-import { appendTagFamilyFilter, appendTagFilter } from "./queryDsl";
+import { applyQueryDslAppend, type QueryLocationState } from "./queryNavigation";
+import {
+  detailLabel,
+  formatDetailValue,
+  populatedDetailKeys,
+  type ResultsLayout,
+  type TagLookup,
+  visibleResultColumns,
+} from "./queryResultsDisplay";
+import { QueryResultsBody } from "./QueryResultsBody";
 import { applySavedViewToQuery } from "./querySavedViewUtils";
 
 type QueryResponse = {
@@ -43,6 +50,8 @@ type Tag = {
 type Me = { roles: string[]; llm_nl_enabled?: boolean };
 
 export function QueryPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [dsl, setDsl] = useState("email:*@example.com");
   const [view, setView] = useState<QueryView>("rows");
   const [res, setRes] = useState<QueryResponse | null>(null);
@@ -54,41 +63,33 @@ export function QueryPage() {
   const [families, setFamilies] = useState<TagFamily[]>([]);
   const [dslFields, setDslFields] = useState<DslField[]>([]);
   const [me, setMe] = useState<Me | null>(null);
-  const [addTagOpen, setAddTagOpen] = useState(false);
-  const [familiesOpen, setFamiliesOpen] = useState(false);
-  const [tagsModalOpen, setTagsModalOpen] = useState(false);
   const [savedViewsOpen, setSavedViewsOpen] = useState(false);
   const [dslHelpOpen, setDslHelpOpen] = useState(false);
   const [nlModalOpen, setNlModalOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [detailRowIndex, setDetailRowIndex] = useState<number | null>(null);
+  const [resultsLayout, setResultsLayout] = useState<ResultsLayout>("table");
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [selectedSavedViewId, setSelectedSavedViewId] = useState("");
-  const [pendingDeleteTagId, setPendingDeleteTagId] = useState<string | null>(null);
-  const [removingTagId, setRemovingTagId] = useState<string | null>(null);
   const [confirmSavedViewDeleteOpen, setConfirmSavedViewDeleteOpen] = useState(false);
   const [deletingSavedView, setDeletingSavedView] = useState(false);
 
-  const columns = useMemo(() => {
+  const tagLookup = useMemo<TagLookup>(() => new Map(tags.map((t) => [t.id, t])), [tags]);
+
+  const resultColumns = useMemo(() => {
     if (!res?.rows.length) return [];
-    const keys = new Set<string>();
-    for (const r of res.rows) {
-      for (const k of Object.keys(r)) keys.add(k);
-    }
-    return Array.from(keys).toSorted();
+    return visibleResultColumns(res.rows, { relatedView: res.view === "related" });
   }, [res]);
 
   const detailKeys = useMemo(() => {
     if (detailRowIndex === null || !res?.rows[detailRowIndex]) return [];
-    return Object.keys(res.rows[detailRowIndex]).toSorted();
+    return populatedDetailKeys(res.rows[detailRowIndex]);
   }, [res, detailRowIndex]);
 
   useEffect(() => {
     setDetailRowIndex(null);
   }, [res]);
 
-  const canWrite = me?.roles.some((r) => r === "admin" || r === "operator" || r === "manager");
-  const isAdmin = me?.roles.includes("admin");
   const nlUi = me?.llm_nl_enabled !== false;
 
   async function loadPageData() {
@@ -115,32 +116,13 @@ export function QueryPage() {
     void loadPageData().catch((e) => setErr(String(e)));
   }, []);
 
-  function applyTagFilter(tagName: string) {
-    setDsl((prev) => appendTagFilter(prev, tagName));
-  }
-
-  function applyFamilyFilter(familyCode: string) {
-    setDsl((prev) => appendTagFamilyFilter(prev, familyCode));
-  }
-
-  function requestRemoveTag(id: string) {
-    setPendingDeleteTagId(id);
-  }
-
-  async function confirmRemoveTag() {
-    if (!pendingDeleteTagId) return;
+  useEffect(() => {
+    const state = location.state as QueryLocationState | null;
+    if (!state?.dslAppend) return;
+    setDsl((prev) => applyQueryDslAppend(prev, state.dslAppend!));
     setErr(null);
-    setRemovingTagId(pendingDeleteTagId);
-    try {
-      await api(`/tags/${pendingDeleteTagId}`, { method: "DELETE" });
-      setPendingDeleteTagId(null);
-      await loadPageData();
-    } catch (ex) {
-      setErr(String(ex));
-    } finally {
-      setRemovingTagId(null);
-    }
-  }
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.state, location.pathname, navigate]);
 
   const selectedSavedView = savedViews.find((item) => item.id === selectedSavedViewId) ?? null;
 
@@ -236,10 +218,7 @@ export function QueryPage() {
     await executeQuery();
   }
 
-  const panelErr =
-    err && !addTagOpen && !dslHelpOpen && !tagsModalOpen && !savedViewsOpen && !nlModalOpen ? (
-      <p className="error">{err}</p>
-    ) : null;
+  const panelErr = err && !dslHelpOpen && !savedViewsOpen && !nlModalOpen ? <p className="error">{err}</p> : null;
 
   return (
     <div>
@@ -266,9 +245,9 @@ export function QueryPage() {
                 <button type="button" className="link-btn" onClick={() => setDslHelpOpen(true)}>
                   DSL reference
                 </button>
-                <button type="button" className="link-btn" onClick={() => setTagsModalOpen(true)}>
+                <Link to="/tags" className="link-btn">
                   Tags
-                </button>
+                </Link>
                 <button type="button" className="link-btn" onClick={() => setSavedViewsOpen(true)}>
                   Saved views
                 </button>
@@ -331,11 +310,37 @@ export function QueryPage() {
         <section className="panel">
           <div className="panel__head">
             <h2>Results</h2>
-            {res.total > 0 ? (
-              <button type="button" className="secondary" onClick={() => setExportOpen(true)}>
-                Export…
-              </button>
-            ) : null}
+            <div className="panel__head-actions">
+              {res.rows.length > 0 ? (
+                <div
+                  className="query-view-switch query-view-switch--toolbar"
+                  role="group"
+                  aria-label="Results layout"
+                >
+                  <button
+                    type="button"
+                    className={resultsLayout === "table" ? "query-view-switch__active" : undefined}
+                    aria-pressed={resultsLayout === "table"}
+                    onClick={() => setResultsLayout("table")}
+                  >
+                    Table
+                  </button>
+                  <button
+                    type="button"
+                    className={resultsLayout === "cards" ? "query-view-switch__active" : undefined}
+                    aria-pressed={resultsLayout === "cards"}
+                    onClick={() => setResultsLayout("cards")}
+                  >
+                    Cards
+                  </button>
+                </div>
+              ) : null}
+              {res.total > 0 ? (
+                <button type="button" className="secondary" onClick={() => setExportOpen(true)}>
+                  Export…
+                </button>
+              ) : null}
+            </div>
           </div>
           {exportMsg ? <p className="hint">{exportMsg}</p> : null}
           <p className="hint" style={{ marginTop: 0 }}>
@@ -346,39 +351,19 @@ export function QueryPage() {
           </p>
           {res.rows.length > 0 ? (
             <>
-              <div className="results-table-wrap">
-                <table className="results-table">
-                  <thead>
-                    <tr>
-                      {columns.map((c) => (
-                        <th key={c}>{c}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {res.rows.map((r, i) => (
-                      <tr
-                        key={rowKey(r)}
-                        className={rowClassName(r, detailRowIndex === i)}
-                        tabIndex={0}
-                        onClick={() => setDetailRowIndex(i)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            setDetailRowIndex(i);
-                          }
-                        }}
-                      >
-                        {columns.map((c) => (
-                          <td key={c}>{fmt(r[c])}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <QueryResultsBody
+                rows={res.rows}
+                columns={resultColumns}
+                layout={resultsLayout}
+                tagLookup={tagLookup}
+                relatedView={res.view === "related"}
+                activeIndex={detailRowIndex}
+                onSelectRow={setDetailRowIndex}
+                rowKey={rowKey}
+                rowClassName={rowClassName}
+              />
               <p className="hint" style={{ marginTop: "0.65rem", marginBottom: 0 }}>
-                Click a row for full fields and values.
+                Click a {resultsLayout === "cards" ? "card" : "row"} for all populated fields.
               </p>
             </>
           ) : (
@@ -389,21 +374,6 @@ export function QueryPage() {
         </section>
       ) : null}
 
-      <TagsModal
-        open={tagsModalOpen}
-        onClose={() => setTagsModalOpen(false)}
-        tags={tags}
-        onApplyTag={applyTagFilter}
-        onApplyFamily={applyFamilyFilter}
-        onRemoveTag={requestRemoveTag}
-        isAdmin={!!isAdmin}
-        canWrite={!!canWrite}
-        onAddTag={() => setAddTagOpen(true)}
-        onManageFamilies={() => setFamiliesOpen(true)}
-        error={err}
-      />
-      <TagAddModal open={addTagOpen} onClose={() => setAddTagOpen(false)} onCreated={loadPageData} />
-      <TagFamiliesModal open={familiesOpen} onClose={() => setFamiliesOpen(false)} onChanged={loadPageData} />
       <SavedViewsModal
         open={savedViewsOpen}
         onClose={() => setSavedViewsOpen(false)}
@@ -416,18 +386,6 @@ export function QueryPage() {
         onRenameSelected={renameSelectedSavedViewByName}
         onDeleteSelected={requestDeleteSelectedSavedView}
         error={err}
-      />
-      <ConfirmModal
-        open={pendingDeleteTagId !== null}
-        title="Delete tag"
-        message="Delete this tag?"
-        confirmLabel="Delete tag"
-        pending={removingTagId !== null}
-        onConfirm={() => void confirmRemoveTag()}
-        onCancel={() => {
-          if (removingTagId) return;
-          setPendingDeleteTagId(null);
-        }}
       />
       <ConfirmModal
         open={confirmSavedViewDeleteOpen}
@@ -472,8 +430,8 @@ export function QueryPage() {
           <dl className="row-detail-dl">
             {detailKeys.map((k) => (
               <Fragment key={k}>
-                <dt>{k}</dt>
-                <dd>{fmt(res.rows[detailRowIndex][k])}</dd>
+                <dt>{detailLabel(k)}</dt>
+                <dd>{formatDetailValue(k, res.rows[detailRowIndex][k], tagLookup)}</dd>
               </Fragment>
             ))}
           </dl>
@@ -481,12 +439,6 @@ export function QueryPage() {
       ) : null}
     </div>
   );
-}
-
-function fmt(v: unknown): string {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
 }
 
 function rowClassName(row: Record<string, unknown>, active: boolean): string | undefined {

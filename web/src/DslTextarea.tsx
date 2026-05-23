@@ -43,8 +43,13 @@ export function DslTextarea({
     syncCursorFromTarget,
     acceptSuggestion,
     updateMenuPosition,
+    focused,
+    focusMenu,
+    blurMenu,
     closeMenu,
   } = useDslAutocompleteMenu({ value, onChange, tags, families, fields });
+
+  const showAutocomplete = focused && menuOpen && suggestions.length > 0;
 
   const { start: visibleStart, end: visibleEnd } = useMemo(
     () => visibleSuggestionRange(suggestions.length, activeIndex),
@@ -59,7 +64,7 @@ export function DslTextarea({
       return;
     }
 
-    if (!menuOpen || suggestions.length === 0) return;
+    if (!showAutocomplete) return;
 
     if (e.key === "Tab") {
       e.preventDefault();
@@ -87,7 +92,7 @@ export function DslTextarea({
   }
 
   const menu =
-    menuOpen && suggestions.length > 0 && menuPos
+    showAutocomplete && menuPos
       ? createPortal(
           <div
             id={`${id}-ac-menu`}
@@ -143,8 +148,8 @@ export function DslTextarea({
         autoComplete="off"
         spellCheck={false}
         aria-autocomplete="list"
-        aria-controls={menuOpen && suggestions.length > 0 ? `${id}-ac-menu` : undefined}
-        aria-expanded={menuOpen && suggestions.length > 0}
+        aria-controls={showAutocomplete ? `${id}-ac-menu` : undefined}
+        aria-expanded={showAutocomplete}
         onChange={(e) => {
           onChange(e.target.value);
           syncCursorFromTarget(e.target);
@@ -153,12 +158,15 @@ export function DslTextarea({
         onKeyUp={(e) => syncCursorFromTarget(e.currentTarget)}
         onClick={(e) => syncCursorFromTarget(e.currentTarget)}
         onSelect={(e) => syncCursorFromTarget(e.currentTarget)}
-        onFocus={(e) => syncCursorFromTarget(e.currentTarget)}
+        onFocus={(e) => {
+          focusMenu();
+          syncCursorFromTarget(e.currentTarget);
+        }}
         onScroll={updateMenuPosition}
-        onBlur={closeMenu}
+        onBlur={blurMenu}
       />
       {menu}
-      {activeSuggestion ? (
+      {focused && activeSuggestion ? (
         <p className="dsl-autocomplete__preview muted" aria-live="polite">
           <span className="dsl-autocomplete__preview-label">Tab</span>{" "}
           <code className="mono">{activeSuggestion.insert}</code>
@@ -169,7 +177,7 @@ export function DslTextarea({
             </>
           ) : null}
         </p>
-      ) : onRun ? (
+      ) : focused && onRun ? (
         <p className="dsl-autocomplete__preview muted">
           <span className="dsl-autocomplete__preview-label">Ctrl+Enter</span> run query
         </p>

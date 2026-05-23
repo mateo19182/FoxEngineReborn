@@ -16,6 +16,7 @@ import { IngestPage } from "./IngestPage";
 import { JobsPage } from "./JobsPage";
 import { LoginPage } from "./LoginPage";
 import { QueryPage } from "./QueryPage";
+import { TagsPage } from "./TagsPage";
 import { SetupPage } from "./SetupPage";
 import { StoragePage } from "./StoragePage";
 import { AssistantChatWidget } from "./AssistantChatWidget";
@@ -109,6 +110,9 @@ function Shell({ children }: { children: React.ReactNode }) {
         <nav className="sidebar-nav" aria-label="Primary">
           <NavLink to="/query" className={linkClass} end>
             Query
+          </NavLink>
+          <NavLink to="/tags" className={linkClass}>
+            Tags
           </NavLink>
           {operator ? (
             <NavLink to="/ingest" className={linkClass}>
@@ -267,7 +271,14 @@ function AppRoutes() {
           </RequireAuth>
         }
       />
-      <Route path="/tags" element={<Navigate to="/query" replace />} />
+      <Route
+        path="/tags"
+        element={
+          <RequireAuth>
+            <TagsPage />
+          </RequireAuth>
+        }
+      />
       <Route
         path="/ingest"
         element={
