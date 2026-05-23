@@ -23,7 +23,7 @@ Self-hosted **PII / breach-data search** stack (IntelX-style MVP): ingest normal
 
    On first start, the optional **`llama-cpp`** service (default in compose) can download a small GGUF model into the `llm_models` volume (several minutes). NL translation is available once `GET /api/health` reports `"llm": "ok"`. To use **LM Studio, Ollama, vLLM, or another host** instead, set `FOX_LLM_BASE_URL` (and related vars) as described in [`docs/LLM.md`](docs/LLM.md).
 
-3. Open **http://localhost:8000**. With the bundled **`backend/seeds/initial_admin.json`** (copied into the API image as `/app/seeds/initial_admin.json`), the first admin is created at startup (`admin` / `changeme` by default); the setup wizard is skipped. Delete or edit that JSON before building if you prefer the interactive setup flow and a one-time API key. Change the password after first login.
+3. Open **http://localhost:8000**. With the bundled **`backend/seeds/initial_admin.json`** (copied into the API image as `/app/seeds/initial_admin.json`), the first admin is created at startup (`admin` / `admin` by default); the setup wizard is skipped. Delete or edit that JSON before building if you prefer the interactive setup flow and a one-time API key. Change the password after first login.
 
 API routes are under **`/api`** (same origin as the SPA). Health: **`GET /api/health`**.
 
