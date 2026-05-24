@@ -16,6 +16,13 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    result = conn.exec_driver_sql(
+        "SELECT 1 FROM information_schema.tables "
+        "WHERE table_schema='public' AND table_name='tag_families'"
+    )
+    if result.fetchone():
+        return
     op.create_table(
         "tag_families",
         sa.Column("id", sa.UUID(), nullable=False),

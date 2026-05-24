@@ -53,6 +53,8 @@ class Settings(BaseSettings):
 
     related_rows_cap: int = 1000
 
+    query_exact_count_cap: int = 10_000
+
     llm_enabled: bool = True
     llm_base_url: str = "http://localhost:8080"
     llm_model: str = "local"

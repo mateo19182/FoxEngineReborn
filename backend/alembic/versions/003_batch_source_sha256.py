@@ -15,8 +15,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("batches", sa.Column("source_sha256", sa.String(length=64), nullable=True))
-    op.create_index("ix_batches_source_sha256", "batches", ["source_sha256"], unique=False)
+    conn = op.get_bind()
+    result = conn.exec_driver_sql(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='batches' AND column_name='source_sha256'"
+    )
+    if not result.fetchone():
+        op.add_column("batches", sa.Column("source_sha256", sa.String(length=64), nullable=True))
+        op.create_index("ix_batches_source_sha256", "batches", ["source_sha256"], unique=False)
 
 
 def downgrade() -> None:

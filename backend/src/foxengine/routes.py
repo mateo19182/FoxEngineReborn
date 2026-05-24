@@ -37,6 +37,7 @@ from foxengine.security import hash_password, issue_jwt, new_api_key_material, v
 from foxengine.services.archive_unpack import merge_text_parts, unpack_archive
 from foxengine.services.assistant_chat import run_assistant_stream, run_assistant_turn
 from foxengine.services.column_map_llm import suggest_column_map_with_llm
+from foxengine.services.deleted_batches import batch_clickhouse_counts, deleted_batch_sql_clause
 from foxengine.services.file_hash import sha256_hex
 from foxengine.services.format_detect import (
     CANONICAL,
@@ -45,8 +46,11 @@ from foxengine.services.format_detect import (
     detect_for_ingest,
 )
 from foxengine.services.ingest import ingest_sync
-from foxengine.services.deleted_batches import batch_clickhouse_counts, deleted_batch_sql_clause
-from foxengine.services.job_queries import compile_leads_where, leads_select_sql
+from foxengine.services.job_queries import (
+    compile_leads_query,
+    leads_bounded_count_sql,
+    leads_select_sql,
+)
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, llm_health_status
 from foxengine.services.nl_to_dsl import translate_nl_to_dsl
 from foxengine.services.related_rows import annotate_related_groups, collect_identity_values
@@ -720,7 +724,7 @@ async def run_query(
 ) -> dict[str, Any]:
     t0 = time.perf_counter()
     try:
-        where_sql, params = await compile_leads_where(session, body.dsl)
+        query = await compile_leads_query(session, body.dsl)
     except Exception as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid dsl: {e}") from e
 
@@ -730,15 +734,24 @@ async def run_query(
         "max_result_rows": 1000,
         "max_memory_usage": "4000000000",
     }
-    count_sql = f"SELECT count() FROM leads WHERE {where_sql}"
-
-    cnt = (await ch.query(count_sql, parameters=params, settings=settings_ch)).first_row[0]
-    data_sql = leads_select_sql(where_sql, limit=body.limit, offset=body.offset)
-    qr = await ch.query(data_sql, parameters=params, settings=settings_ch)
+    count_cap = get_settings().query_exact_count_cap
+    count_sql = leads_bounded_count_sql(query, count_cap)
+    raw_count = int(
+        (await ch.query(count_sql, parameters=query.parameters, settings=settings_ch)).first_row[0]
+    )
+    total_exact = raw_count <= count_cap
+    total = raw_count if total_exact else count_cap
+    data_sql = leads_select_sql(
+        query.leads_where_sql,
+        limit=body.limit,
+        offset=body.offset,
+        tag_keys_rows_sql=query.tag_keys_rows_sql,
+    )
+    qr = await ch.query(data_sql, parameters=query.parameters, settings=settings_ch)
     out_rows = [dict(r) for r in qr.named_results()]
     if body.view == "related" and out_rows:
         identity_values = collect_identity_values(out_rows)
-        related_params = dict(params)
+        related_params = dict(query.parameters)
         related_params.update(
             {
                 "rel_emails": identity_values["email_norm"],
@@ -788,11 +801,13 @@ async def run_query(
             "offset": body.offset,
             "duration_ms": ms,
             "result_count": len(out_rows),
-            "total_matching": int(cnt),
+            "total_matching": total,
+            "total_exact": total_exact,
         },
     )
     return {
-        "total": int(cnt),
+        "total": total,
+        "total_exact": total_exact,
         "rows": out_rows,
         "limit": body.limit,
         "offset": body.offset,
@@ -1596,6 +1611,32 @@ async def list_jobs(session: SessionDep, principal: PrincipalDep) -> list[schema
         batch_map = {b.id: b for b in batch_res.scalars().all()}
 
     return [_job_out(j, batch_map[j.batch_id] if j.batch_id is not None else None) for j in jobs]
+
+
+@router.post("/jobs/{job_id}/recover", response_model=schemas.JobRecoverResponse)
+async def recover_job(
+    job_id: UUID,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> schemas.JobRecoverResponse:
+    from foxengine.services.job_recovery import recover_fox_job
+
+    res = await session.execute(select(Job).where(Job.id == job_id))
+    job = res.scalar_one_or_none()
+    if job is None or not _can_view_job(principal, job):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    action = await recover_fox_job(job_id)
+    if action == "not_recoverable":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"job cannot be recovered from state {job.state!r}",
+        )
+    res2 = await session.execute(select(Job).where(Job.id == job_id))
+    job = res2.scalar_one()
+    batch = None
+    if job.batch_id:
+        batch = await session.scalar(select(Batch).where(Batch.id == job.batch_id))
+    return schemas.JobRecoverResponse(action=action, job=_job_out(job, batch))
 
 
 @router.get("/jobs/{job_id}", response_model=schemas.JobOut)

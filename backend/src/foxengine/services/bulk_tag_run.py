@@ -111,25 +111,26 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
     unique_keys = list(dict.fromkeys(keys_from_csv))
     ch = await get_ch_client()
     existing: set[str] = set()
-    matched_rows: set[tuple[str, int]] = set()
+    matched_rows: dict[tuple[str, int], datetime] = {}
     chunk_size = 10_000
     for i in range(0, len(unique_keys), chunk_size):
         chunk = unique_keys[i : i + chunk_size]
         q = (
-            "SELECT identity_value, batch_id, row_in_batch "
-            "FROM lead_identities "
-            "WHERE identity_kind = 'identity_key' "
-            "AND has({keys:Array(String)}, identity_value)"
+            "SELECT li.identity_value, li.batch_id, li.row_in_batch, l.ingest_ts "
+            "FROM lead_identities AS li "
+            "INNER JOIN leads AS l USING (batch_id, row_in_batch) "
+            "WHERE li.identity_kind = 'identity_key' "
+            "AND has({keys:Array(String)}, li.identity_value)"
         )
         qr = await ch.query(q, parameters={"keys": chunk})
         for row in qr.result_rows:
             existing.add(str(row[0]))
-            matched_rows.add((str(row[1]), int(row[2])))
+            matched_rows[(str(row[1]), int(row[2]))] = row[3]
 
     assigned_at = datetime.now(UTC).replace(tzinfo=None)
     tag_rows = [
-        [str(tag_id), batch_id, row_in_batch, assigned_at, f"bulk_tag:{job_id}"]
-        for batch_id, row_in_batch in matched_rows
+        [str(tag_id), batch_id, row_in_batch, ingest_ts, assigned_at, f"bulk_tag:{job_id}"]
+        for (batch_id, row_in_batch), ingest_ts in matched_rows.items()
         for tag_id in tag_ids
     ]
     if tag_rows:

@@ -36,6 +36,8 @@ IDENTITY_FIELD_TO_KIND = {
     "id_card": "id_card",
 }
 
+TAG_FIELDS = frozenset({"tag", "tag.family", "tag.breach_date"})
+
 
 @dataclass
 class CompiledWhere:
@@ -82,6 +84,127 @@ def _lead_key_in(table: str, where_sql: str) -> str:
         "(batch_id, row_in_batch) IN "
         f"(SELECT batch_id, row_in_batch FROM {table} WHERE {where_sql})"
     )
+
+
+def _tag_ids_for_pred(
+    p: Pred, tag_uuid_lists: dict[tuple[str, str], list[UUID]]
+) -> list[UUID]:
+    return tag_uuid_lists.get((p.field, p.value), [])
+
+
+def _tag_id_in_sql(uuids: list[UUID], params: dict[str, Any], base: str = "tu") -> str:
+    if len(uuids) == 1:
+        pn = _next_name(params, base)
+        params[pn] = str(uuids[0])
+        return f"tag_id = toUUID({{{pn}:String}})"
+    names: list[str] = []
+    for u in uuids:
+        pn = _next_name(params, base)
+        params[pn] = str(u)
+        names.append(f"toUUID({{{pn}:String}})")
+    return f"tag_id IN ({', '.join(names)})"
+
+
+def _tag_uuid_array_param(uuids: list[UUID], params: dict[str, Any], base: str) -> str:
+    pn = _next_name(params, base)
+    params[pn] = [str(u) for u in uuids]
+    return f"arrayMap(x -> toUUID(x), {{{pn}:Array(String)}})"
+
+
+def is_tag_only_expr(expr: Expr) -> bool:
+    if isinstance(expr, Pred):
+        return expr.field in TAG_FIELDS
+    if isinstance(expr, Not):
+        return False
+    if isinstance(expr, And | Or):
+        return bool(expr.parts) and all(is_tag_only_expr(p) for p in expr.parts)
+    return False
+
+
+def _collect_tag_uuid_sets(
+    expr: Expr, tag_uuid_lists: dict[tuple[str, str], list[UUID]]
+) -> list[list[UUID]]:
+    if isinstance(expr, Pred):
+        return [_tag_ids_for_pred(expr, tag_uuid_lists)]
+    if isinstance(expr, And):
+        out: list[list[UUID]] = []
+        for part in expr.parts:
+            out.extend(_collect_tag_uuid_sets(part, tag_uuid_lists))
+        return out
+    if isinstance(expr, Or):
+        merged: list[UUID] = []
+        for part in expr.parts:
+            for s in _collect_tag_uuid_sets(part, tag_uuid_lists):
+                merged.extend(s)
+        return [merged] if merged else [[]]
+    return [[]]
+
+
+def compile_tag_keys_rows_sql(
+    expr: Expr,
+    tag_uuid_lists: dict[tuple[str, str], list[UUID]],
+) -> CompiledWhere | None:
+    if not is_tag_only_expr(expr):
+        return None
+    params: dict[str, Any] = {}
+    sql = _tag_keys_rows_sql(expr, params, tag_uuid_lists)
+    return CompiledWhere(sql=sql, parameters=params)
+
+
+def _tag_keys_rows_sql(
+    expr: Expr,
+    params: dict[str, Any],
+    tag_uuid_lists: dict[tuple[str, str], list[UUID]],
+) -> str:
+    if isinstance(expr, Pred):
+        uuids = _tag_ids_for_pred(expr, tag_uuid_lists)
+        if not uuids:
+            return "SELECT batch_id, row_in_batch FROM lead_tags WHERE 1 = 0"
+        where = _tag_id_in_sql(uuids, params)
+        return (
+            "SELECT batch_id, row_in_batch, max(ingest_ts) AS ingest_ts "
+            f"FROM lead_tags WHERE {where} "
+            "GROUP BY batch_id, row_in_batch"
+        )
+
+    if isinstance(expr, Or):
+        uuid_sets = _collect_tag_uuid_sets(expr, tag_uuid_lists)
+        flat = uuid_sets[0] if uuid_sets else []
+        if not flat:
+            return "SELECT batch_id, row_in_batch FROM lead_tags WHERE 1 = 0"
+        where = _tag_id_in_sql(flat, params)
+        return (
+            "SELECT batch_id, row_in_batch, max(ingest_ts) AS ingest_ts "
+            f"FROM lead_tags WHERE {where} "
+            "GROUP BY batch_id, row_in_batch"
+        )
+
+    if isinstance(expr, And):
+        if len(expr.parts) == 1:
+            return _tag_keys_rows_sql(expr.parts[0], params, tag_uuid_lists)
+        uuid_sets = _collect_tag_uuid_sets(expr, tag_uuid_lists)
+        if any(not s for s in uuid_sets):
+            return "SELECT batch_id, row_in_batch FROM lead_tags WHERE 1 = 0"
+        flat: list[UUID] = []
+        seen: set[UUID] = set()
+        for s in uuid_sets:
+            for u in s:
+                if u not in seen:
+                    seen.add(u)
+                    flat.append(u)
+        in_sql = _tag_id_in_sql(flat, params)
+        having = " AND ".join(
+            f"hasAny(groupUniqArray(tag_id), {_tag_uuid_array_param(s, params, 'tas')})"
+            for s in uuid_sets
+        )
+        return (
+            "SELECT batch_id, row_in_batch, max(ingest_ts) AS ingest_ts "
+            f"FROM lead_tags WHERE {in_sql} "
+            "GROUP BY batch_id, row_in_batch "
+            f"HAVING {having}"
+        )
+
+    raise CompileError("unsupported expression")
 
 
 def _pred_sql(

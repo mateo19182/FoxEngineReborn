@@ -71,6 +71,23 @@ export function JobsPage() {
     setJobs(j);
   }
 
+  function jobStateLabel(j: Job): string {
+    if (j.state !== "running") return j.state;
+    const phase = j.checkpoint?.resume_phase;
+    if (phase === "loading_dedup") {
+      const loaded = j.checkpoint?.dedup_keys_loaded;
+      return typeof loaded === "number"
+        ? `running (loading dedup: ${loaded.toLocaleString()})`
+        : "running (loading dedup)";
+    }
+    return j.state;
+  }
+
+  async function recoverJob(id: string) {
+    await api<{ action: string }>(`/jobs/${id}/recover`, { method: "POST" });
+    await load();
+  }
+
   useEffect(() => {
     void (async () => {
       try {
@@ -130,10 +147,19 @@ export function JobsPage() {
                     <td>{j.accepted_rows ?? 0}</td>
                     <td>{j.rejected_rows ?? 0}</td>
                     <td>{j.duplicate_rows ?? 0}</td>
-                    <td>{j.state}</td>
-                    <td>{j.processed_rows}</td>
+                    <td>{jobStateLabel(j)}</td>
+                    <td>{j.processed_rows.toLocaleString()}</td>
                     <td>{j.error ?? ""}</td>
                     <td>
+                      {j.state === "running" || j.state === "queued" ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => recoverJob(j.id).catch((e) => setErr(String(e)))}
+                        >
+                          Recover
+                        </button>
+                      ) : null}
                       {j.state === "done" && j.result_uri ? (
                         <span className="btn-with-tip">
                           <button

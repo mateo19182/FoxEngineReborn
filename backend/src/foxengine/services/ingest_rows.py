@@ -57,6 +57,7 @@ CH_TAG_INSERT_COLUMNS = [
     "tag_id",
     "batch_id",
     "row_in_batch",
+    "ingest_ts",
     "assigned_at",
     "source",
 ]
@@ -236,7 +237,11 @@ def materialize_tag_rows(
 ) -> list[list[Any]]:
     batch_id = lead_row[0]
     row_in_batch = lead_row[1]
-    return [[tag_id, batch_id, row_in_batch, assigned_at, source] for tag_id in tag_id_strs]
+    ingest_ts = lead_row[2]
+    return [
+        [tag_id, batch_id, row_in_batch, ingest_ts, assigned_at, source]
+        for tag_id in tag_id_strs
+    ]
 
 
 def csv_row_to_raw(

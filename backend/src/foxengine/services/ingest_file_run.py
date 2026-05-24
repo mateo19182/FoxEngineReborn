@@ -19,6 +19,12 @@ from foxengine.config import get_settings
 from foxengine.db.models import Batch, IngestRejection, Job
 from foxengine.db.session import get_session_factory
 from foxengine.services.ingest import resolve_tag_ids
+from foxengine.services.ingest_resume import (
+    checkpoint_int,
+    ingest_needs_resume,
+    load_seen_hashes_from_batch,
+    max_row_in_batch,
+)
 from foxengine.services.ingest_rows import (
     CH_IDENTITY_INSERT_COLUMNS,
     CH_INSERT_COLUMNS,
@@ -83,6 +89,13 @@ async def run_ingest_file_job(job_id: UUID) -> None:
         tag_id_strs = [str(u) for u in tag_ids]
         await session.commit()
 
+    resume_line_index = checkpoint_int(ck, "resume_line_index", default=-1)
+    resume_csv_row = checkpoint_int(ck, "resume_csv_row", default=-1)
+    accepted = checkpoint_int(ck, "accepted_rows")
+    rejected = checkpoint_int(ck, "rejected_rows")
+    dup = checkpoint_int(ck, "duplicate_rows")
+    rib = checkpoint_int(ck, "rib")
+
     session_boto = aioboto3.Session()
     async with session_boto.client(
         "s3",
@@ -103,24 +116,97 @@ async def run_ingest_file_job(job_id: UUID) -> None:
 
             text_file = io.TextIOWrapper(tmp, encoding="utf-8", errors="replace", newline="")
             ch = await get_ch_client()
+            if ingest_needs_resume(ck):
+                async def _dedup_load_progress(loaded: int) -> None:
+                    async with factory() as session:
+                        await session.execute(
+                            update(Job)
+                            .where(Job.id == job_id)
+                            .values(
+                                checkpoint={
+                                    **ck,
+                                    "resume_phase": "loading_dedup",
+                                    "dedup_keys_loaded": loaded,
+                                }
+                            )
+                        )
+                        await session.commit()
+
+                seen_hashes = await load_seen_hashes_from_batch(
+                    ch, batch.id, on_progress=_dedup_load_progress
+                )
+                rib = max(rib, await max_row_in_batch(ch, batch.id))
+                ck = {**ck, "resume_phase": None, "dedup_keys_loaded": len(seen_hashes)}
+                log.info(
+                    "resuming ingest job %s at line %s csv_row %s rib %s dedup_keys=%s",
+                    job_id,
+                    resume_line_index,
+                    resume_csv_row,
+                    rib,
+                    len(seen_hashes),
+                )
+            else:
+                seen_hashes = set()
+
             ch_rows: list[list[Any]] = []
             identity_rows: list[list[Any]] = []
             tag_rows: list[list[Any]] = []
             rejections: list[tuple[int, str, str]] = []
-            seen_hashes: set[str] = set()
-            accepted = 0
-            rejected = 0
-            dup = 0
-            rib = 0
+            rejections_flush_at = 0
+            last_line_index = resume_line_index
+            last_csv_row = resume_csv_row
             ts = ingest_timestamp()
+
+            async def persist_progress() -> None:
+                nonlocal rejections_flush_at, ck
+                processed = accepted + rejected + dup
+                ck = {
+                    **ck,
+                    "rib": rib,
+                    "accepted_rows": accepted,
+                    "rejected_rows": rejected,
+                    "duplicate_rows": dup,
+                    "resume_line_index": last_line_index,
+                    "resume_csv_row": last_csv_row,
+                }
+                async with factory() as session:
+                    for line_no, reason, raw_line in rejections[rejections_flush_at:]:
+                        session.add(
+                            IngestRejection(
+                                batch_id=batch.id,
+                                line_no=line_no,
+                                reason=reason,
+                                raw_line=raw_line,
+                            )
+                        )
+                    rejections_flush_at = len(rejections)
+                    await session.execute(
+                        update(Batch)
+                        .where(Batch.id == batch.id)
+                        .values(
+                            accepted_rows=accepted,
+                            rejected_rows=rejected,
+                            duplicate_rows=dup,
+                        )
+                    )
+                    await session.execute(
+                        update(Job)
+                        .where(Job.id == job_id)
+                        .values(processed_rows=processed, checkpoint=ck)
+                    )
+                    await session.commit()
 
             async def flush_if_needed() -> None:
                 if len(ch_rows) >= CH_INGEST_FLUSH_ROWS:
                     await _flush_clickhouse_rows(ch, ch_rows, identity_rows, tag_rows)
+                    await persist_progress()
 
             if fmt == "jsonl":
                 for i, raw_s in enumerate(text_file):
+                    if i <= resume_line_index:
+                        continue
                     line_no = i + 1
+                    last_line_index = i
                     raw_s = raw_s.strip()
                     if not raw_s or raw_s.startswith("#"):
                         continue
@@ -161,7 +247,10 @@ async def run_ingest_file_job(job_id: UUID) -> None:
                         await _fail_job(session, job_id, "empty csv")
                     return
                 for j, cells in enumerate(reader):
+                    if j <= resume_csv_row:
+                        continue
                     line_no = j + 2
+                    last_csv_row = j
                     raw = csv_row_to_raw(
                         header,
                         cells,
@@ -188,7 +277,10 @@ async def run_ingest_file_job(job_id: UUID) -> None:
                     await flush_if_needed()
             elif fmt == "combo":
                 for i, raw_s in enumerate(text_file):
+                    if i <= resume_line_index:
+                        continue
                     line_no = i + 1
+                    last_line_index = i
                     raw_s = raw_s.strip()
                     if not raw_s or raw_s.startswith("#"):
                         continue
@@ -223,9 +315,10 @@ async def run_ingest_file_job(job_id: UUID) -> None:
 
             if ch_rows:
                 await _flush_clickhouse_rows(ch, ch_rows, identity_rows, tag_rows)
+            await persist_progress()
 
     async with factory() as session:
-        for line_no, reason, raw_line in rejections:
+        for line_no, reason, raw_line in rejections[rejections_flush_at:]:
             session.add(
                 IngestRejection(
                     batch_id=batch.id,
@@ -251,6 +344,9 @@ async def run_ingest_file_job(job_id: UUID) -> None:
                     "accepted_rows": accepted,
                     "rejected_rows": rejected,
                     "duplicate_rows": dup,
+                    "rib": rib,
+                    "resume_line_index": last_line_index,
+                    "resume_csv_row": last_csv_row,
                 },
             )
         )

@@ -22,11 +22,18 @@ import { applySavedViewToQuery } from "./querySavedViewUtils";
 
 type QueryResponse = {
   total: number;
+  total_exact?: boolean;
   rows: Record<string, unknown>[];
   limit: number;
   offset: number;
   view: string;
 };
+
+function formatTotal(res: QueryResponse): string {
+  const n = res.total.toLocaleString();
+  if (res.total_exact === false) return `${n}+`;
+  return n;
+}
 
 type Tag = {
   id: string;
@@ -315,9 +322,10 @@ export function QueryPage() {
           {exportMsg ? <p className="hint">{exportMsg}</p> : null}
           <p className="hint" style={{ marginTop: 0 }}>
             {res.view === "related"
-              ? `Total DSL matches: ${res.total}. Showing ${res.rows.length} linked row(s).`
-              : `Total matching: ${res.total}. Showing ${res.rows.length} row(s).`}{" "}
+              ? `Total DSL matches: ${formatTotal(res)}. Showing ${res.rows.length} linked row(s).`
+              : `Total matching: ${formatTotal(res)}. Showing ${res.rows.length} row(s).`}{" "}
             View: {res.view}.
+            {res.total_exact === false ? " Count capped for speed; export still returns all matches." : null}
           </p>
           {res.rows.length > 0 ? (
             <>

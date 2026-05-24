@@ -18,7 +18,12 @@ from foxengine.clickhouse import get_ch_client
 from foxengine.config import get_settings
 from foxengine.db.models import Job
 from foxengine.db.session import get_session_factory
-from foxengine.services.job_queries import compile_leads_where, leads_select_sql
+from foxengine.services.job_queries import (
+    KeysetCursor,
+    compile_leads_query,
+    keyset_parameters,
+    leads_select_sql,
+)
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +31,7 @@ CH_SETTINGS = {
     "max_execution_time": 3600,
     "max_result_rows": 10_000_000,
     "max_memory_usage": "8000000000",
+    "max_bytes_before_external_sort": "2000000000",
 }
 
 
@@ -62,7 +68,7 @@ async def run_export_job(job_id: UUID) -> None:
         await session.commit()
 
         owner = job.owner_user_id
-        where_sql, params = await compile_leads_where(session, dsl)
+        query = await compile_leads_query(session, dsl)
 
     row_cap = s.max_export_rows
     rl_raw = ck.get("row_limit")
@@ -76,16 +82,27 @@ async def run_export_job(job_id: UUID) -> None:
     csv_writer: Any = None
 
     batch_size = 50_000
-    offset = int(ck.get("resume_offset") or 0)
+    cursor = KeysetCursor.from_checkpoint(ck.get("resume_cursor"))
+    legacy_offset = int(ck.get("resume_offset") or 0) if cursor is None else 0
 
     if fmt == "csv":
         csv_writer = csv.writer(buf)
 
     while total_written < row_cap:
         lim = min(batch_size, row_cap - total_written)
-        data_sql = leads_select_sql(where_sql, limit=lim, offset=offset)
+        params = dict(query.parameters)
+        if cursor is not None:
+            params.update(keyset_parameters(cursor))
+        data_sql = leads_select_sql(
+            query.leads_where_sql,
+            limit=lim,
+            offset=legacy_offset,
+            include_extras=True,
+            tag_keys_rows_sql=query.tag_keys_rows_sql,
+            cursor=cursor,
+        )
         qr = await ch.query(data_sql, parameters=params, settings=CH_SETTINGS)
-        rows = list(qr.named_results())
+        rows = [dict(r) for r in qr.named_results()]
         if not rows:
             break
         if fmt == "csv":
@@ -94,23 +111,30 @@ async def run_export_job(job_id: UUID) -> None:
                 columns = sorted(rows[0].keys())
                 csv_writer.writerow(columns)
             for r in rows:
-                d = dict(r)
-                csv_writer.writerow([_fmt_csv_cell(d.get(c)) for c in columns])
+                csv_writer.writerow([_fmt_csv_cell(r.get(c)) for c in columns])
         else:
             for r in rows:
                 buf.write(
-                    json.dumps(dict(r), ensure_ascii=False, default=_export_json_default)
+                    json.dumps(r, ensure_ascii=False, default=_export_json_default)
                     + "\n"
                 )
         total_written += len(rows)
-        offset += len(rows)
+        cursor = KeysetCursor.from_row(rows[-1])
+        legacy_offset = 0
+        checkpoint = {
+            **ck,
+            "dsl": dsl,
+            "format": fmt,
+            "resume_cursor": cursor.to_checkpoint(),
+            "resume_offset": None,
+        }
         async with factory() as s2:
             await s2.execute(
                 update(Job)
                 .where(Job.id == job_id)
                 .values(
                     processed_rows=total_written,
-                    checkpoint={**ck, "dsl": dsl, "format": fmt, "resume_offset": offset},
+                    checkpoint=checkpoint,
                 )
             )
             await s2.commit()
@@ -131,6 +155,16 @@ async def run_export_job(job_id: UUID) -> None:
     ) as c:
         await c.put_object(Bucket=s.s3_bucket_exports, Key=key, Body=body)
 
+    final_checkpoint = {
+        **ck,
+        "dsl": dsl,
+        "format": fmt,
+        "rows": total_written,
+    }
+    if cursor is not None:
+        final_checkpoint["resume_cursor"] = cursor.to_checkpoint()
+    final_checkpoint["resume_offset"] = None
+
     async with factory() as session:
         await session.execute(
             update(Job)
@@ -140,7 +174,7 @@ async def run_export_job(job_id: UUID) -> None:
                 finished_at=datetime.now(UTC),
                 processed_rows=total_written,
                 result_uri=f"s3://{s.s3_bucket_exports}/{key}",
-                checkpoint={**ck, "resume_offset": offset, "rows": total_written},
+                checkpoint=final_checkpoint,
             )
         )
         await session.commit()

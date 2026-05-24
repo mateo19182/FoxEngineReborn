@@ -64,12 +64,13 @@ CREATE TABLE IF NOT EXISTS lead_tags (
     tag_id UUID,
     batch_id UUID,
     row_in_batch UInt32,
+    ingest_ts DateTime DEFAULT now(),
     assigned_at DateTime DEFAULT now(),
     source LowCardinality(String) DEFAULT ''
 )
 ENGINE = ReplacingMergeTree(assigned_at)
 PARTITION BY toYYYYMM(assigned_at)
-ORDER BY (tag_id, batch_id, row_in_batch)
+ORDER BY (tag_id, ingest_ts, batch_id, row_in_batch)
 SETTINGS index_granularity = 8192;
 """,
 ]
