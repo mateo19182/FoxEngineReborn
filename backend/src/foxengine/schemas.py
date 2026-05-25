@@ -2,6 +2,8 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from foxengine.services.export_query import EXPORT_LEAD_COLUMNS
+
 StorageStore = Literal["uploads", "exports"]
 
 
@@ -307,6 +309,34 @@ class ExportRequest(BaseModel):
     dsl: str
     format: Literal["csv", "jsonl"] = "csv"
     row_limit: int | None = Field(default=None, ge=1)
+    columns: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=len(EXPORT_LEAD_COLUMNS),
+    )
+
+    @field_validator("columns")
+    @classmethod
+    def validate_columns(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        allowed = set(EXPORT_LEAD_COLUMNS)
+        out: list[str] = []
+        seen: set[str] = set()
+        unknown: list[str] = []
+        for col in v:
+            if col not in allowed:
+                unknown.append(col)
+                continue
+            if col in seen:
+                continue
+            out.append(col)
+            seen.add(col)
+        if unknown:
+            raise ValueError(f"unsupported export columns: {', '.join(unknown)}")
+        if not out:
+            raise ValueError("at least one export column is required")
+        return out
 
 
 class IngestQueuedUploadRequest(BaseModel):
@@ -316,6 +346,7 @@ class IngestQueuedUploadRequest(BaseModel):
     batch_name: str | None = None
     column_map_by_file_json: str | None = None
     merge_archive: bool = False
+    allow_duplicate_upload: bool = False
 
 
 class IngestDuplicateMatch(BaseModel):
@@ -415,6 +446,14 @@ class BatchDeletePreview(BaseModel):
 class BatchDeleteResponse(BaseModel):
     status: str
     job_id: str | None = None
+
+
+class BatchTagRequest(BaseModel):
+    tag_names: list[str] = Field(min_length=1)
+
+
+class BatchTagResponse(BaseModel):
+    job_id: str
 
 
 class UploadBrowseEntry(BaseModel):

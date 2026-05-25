@@ -12,19 +12,34 @@ from foxengine.db.models import Batch
 
 
 async def deleted_batch_sql_clause(session: AsyncSession) -> tuple[str, dict[str, Any]]:
-    """Return a WHERE fragment and parameters excluding soft-deleted batch rows."""
+    """Return a WHERE fragment excluding hidden and soft-deleted batch rows.
+
+    Batches without a visibility row are treated as visible for compatibility with
+    data ingested before `batch_visibility` existed. New ingest jobs write
+    visible=0 before loading rows and visible=1 only after a successful commit.
+    """
     deleted = (
         await session.execute(select(Batch.id).where(Batch.deleted_at.is_not(None)))
     ).scalars().all()
+    clauses = [
+        """
+batch_id NOT IN (
+    SELECT batch_id
+    FROM batch_visibility
+    GROUP BY batch_id
+    HAVING argMax(visible, version) = 0
+)""".strip()
+    ]
     if not deleted:
-        return "", {}
+        return " AND " + " AND ".join(clauses), {}
     parts: list[str] = []
     params: dict[str, Any] = {}
     for i, bid in enumerate(deleted):
         k = f"bd_{i}"
         params[k] = str(bid)
         parts.append(f"toUUID({{{k}:String}})")
-    return " AND batch_id NOT IN (" + ", ".join(parts) + ")", params
+    clauses.append("batch_id NOT IN (" + ", ".join(parts) + ")")
+    return " AND " + " AND ".join(clauses), params
 
 
 PURGE_TABLES_DELETE_ORDER: tuple[str, ...] = ("leads", "lead_identities", "lead_tags")
@@ -48,3 +63,17 @@ async def lightweight_delete_batch_rows(ch: Any, batch_id: UUID) -> None:
             f"DELETE FROM {table} WHERE batch_id = {{bid:UUID}}",
             parameters={"bid": batch_id},
         )
+
+
+async def mark_batch_visibility(
+    ch: Any,
+    batch_id: UUID,
+    *,
+    visible: bool,
+    reason: str,
+) -> None:
+    await ch.insert(
+        "batch_visibility",
+        [[str(batch_id), 1 if visible else 0, reason[:128]]],
+        column_names=["batch_id", "visible", "reason"],
+    )

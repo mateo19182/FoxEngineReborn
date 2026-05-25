@@ -9,6 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from foxengine.db.models import Tag, TagFamily
 from foxengine.dsl.ast_nodes import And, Expr, Not, Or, Pred
 
+TAG_FIELDS = frozenset({"tag", "tag.family", "tag.breach_date"})
+
+
+class TagResolveError(Exception):
+    """Tag predicate cannot be resolved against Postgres metadata."""
+
 
 def walk_preds(expr: Expr) -> list[Pred]:
     if isinstance(expr, Pred):
@@ -21,6 +27,52 @@ def walk_preds(expr: Expr) -> list[Pred]:
             out.extend(walk_preds(p))
         return out
     return []
+
+
+def walk_positive_tag_preds(expr: Expr, *, negated: bool = False) -> list[Pred]:
+    """Tag predicates that require a match (not under NOT)."""
+    if isinstance(expr, Pred):
+        if negated or expr.field not in TAG_FIELDS:
+            return []
+        return [expr]
+    if isinstance(expr, Not):
+        return walk_positive_tag_preds(expr.inner, negated=not negated)
+    if isinstance(expr, And | Or):
+        out: list[Pred] = []
+        for part in expr.parts:
+            out.extend(walk_positive_tag_preds(part, negated=negated))
+        return out
+    return []
+
+
+async def validate_tag_references(
+    session: AsyncSession,
+    expr: Expr,
+    tag_uuid_lists: dict[tuple[str, str], list[UUID]],
+) -> None:
+    """Reject unknown tag names / families before ClickHouse (Postgres is source of truth)."""
+    family_codes: set[str] = set()
+    for pred in walk_positive_tag_preds(expr):
+        if pred.field == "tag":
+            if not tag_uuid_lists.get((pred.field, pred.value)):
+                raise TagResolveError(f"tag does not exist: {pred.value}")
+        elif pred.field == "tag.family":
+            family_codes.add(pred.value.strip().upper())
+
+    if not family_codes:
+        return
+
+    rows = (
+        await session.execute(
+            select(func.upper(TagFamily.code)).where(
+                func.upper(TagFamily.code).in_(family_codes)
+            )
+        )
+    ).scalars().all()
+    found = set(rows)
+    for code in family_codes:
+        if code not in found:
+            raise TagResolveError(f"tag family does not exist: {code}")
 
 
 async def resolve_tag_predicates(

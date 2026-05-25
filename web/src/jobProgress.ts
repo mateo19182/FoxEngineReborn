@@ -22,6 +22,16 @@ export function jobProgressView(job: JobProgressSnapshot): JobProgressView {
         label: rows > 0 ? `Exported ${rows.toLocaleString()} rows` : "Export done",
       };
     }
+    if (job.type === "batch_tag") {
+      const tags = job.checkpoint.tag_names;
+      const tagCount = Array.isArray(tags) ? tags.length : 0;
+      const suffix = tagCount > 0 ? ` · ${tagCount} tag${tagCount === 1 ? "" : "s"}` : "";
+      return {
+        mode: "determinate",
+        value: 100,
+        label: rows > 0 ? `Tagged ${rows.toLocaleString()} rows${suffix}` : `Tagged${suffix}`,
+      };
+    }
     return {
       mode: "determinate",
       value: 100,

@@ -2,7 +2,8 @@ import unittest
 from uuid import UUID
 
 from foxengine.dsl.parser import parse_dsl
-from foxengine.dsl.sql import compile_leads_query
+from foxengine.dsl.sql import CompiledLeadsQuery, compile_leads_query
+from foxengine.services.job_queries import leads_count_sql
 
 U1 = UUID("11111111-1111-1111-1111-111111111111")
 U2 = UUID("22222222-2222-2222-2222-222222222222")
@@ -16,6 +17,7 @@ class TestDslTagFirst(unittest.TestCase):
     def test_single_tag_uses_tag_first(self):
         cw = self._compile("tag:Foo", {("tag", "Foo"): [U1]})
         self.assertIsNotNone(cw.tag_keys_select)
+        self.assertIn("SELECT DISTINCT batch_id, row_in_batch", cw.tag_keys_select)
         self.assertIn("FROM lead_tags", cw.tag_keys_select)
         self.assertIn("tag_id", cw.tag_keys_select)
         self.assertNotIn("IN (SELECT", cw.tag_keys_select or "")
@@ -75,6 +77,21 @@ class TestDslTagFirst(unittest.TestCase):
         )
         self.assertIsNotNone(cw.tag_keys_select)
         self.assertIn("NOT", cw.leads_where)
+
+    def test_tag_count_keeps_visibility_clause_parentheses_balanced(self):
+        compiled = CompiledLeadsQuery(
+            leads_where="""(1 = 1) AND batch_id NOT IN (
+    SELECT batch_id
+    FROM batch_visibility
+    GROUP BY batch_id
+    HAVING argMax(visible, version) = 0
+)""",
+            parameters={},
+            tag_keys_select="SELECT DISTINCT batch_id, row_in_batch FROM lead_tags WHERE tag_id = toUUID({tu_0:String})",
+        )
+        sql = leads_count_sql(compiled)
+        self.assertIn("WHERE (1 = 1) AND batch_id NOT IN", sql)
+        self.assertNotIn("WHERE 1 = 1) AND", sql)
 
 
 if __name__ == "__main__":

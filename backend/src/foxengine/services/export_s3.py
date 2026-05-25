@@ -29,6 +29,7 @@ class ExportS3Writer:
         upload_id: str | None = None,
         completed_parts: list[dict[str, Any]] | None = None,
         next_part_number: int = 1,
+        abort_on_exception: bool = True,
     ) -> None:
         self._endpoint_url = endpoint_url
         self._access_key_id = access_key_id
@@ -44,6 +45,7 @@ class ExportS3Writer:
         self._buf = bytearray()
         self._part_no = next_part_number
         self._closed = False
+        self._abort_on_exception = abort_on_exception
 
     @property
     def upload_id(self) -> str | None:
@@ -65,7 +67,7 @@ class ExportS3Writer:
 
     async def __aexit__(self, *exc: object) -> None:
         if self._client is not None:
-            if exc:
+            if exc and self._abort_on_exception:
                 await self._abort()
             await self._client.__aexit__(*exc)
         self._closed = True

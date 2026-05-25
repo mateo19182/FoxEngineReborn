@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -41,11 +42,39 @@ EXPORT_LEAD_COLUMNS: tuple[str, ...] = (
     "extras",
 )
 
+EXPORT_CURSOR_COLUMNS: tuple[str, ...] = ("ingest_ts", "batch_id", "row_in_batch")
+
 CH_EXPORT_SETTINGS: dict[str, Any] = {
     "max_execution_time": 3600,
     "max_memory_usage": "8000000000",
     "s3_truncate_on_insert": 1,
 }
+
+
+def normalize_export_columns(columns: Sequence[str] | None) -> tuple[str, ...]:
+    if columns is None:
+        return EXPORT_LEAD_COLUMNS
+    allowed = set(EXPORT_LEAD_COLUMNS)
+    out: list[str] = []
+    seen: set[str] = set()
+    for col in columns:
+        if col not in allowed:
+            raise ValueError(f"unsupported export column: {col}")
+        if col in seen:
+            continue
+        out.append(col)
+        seen.add(col)
+    if not out:
+        raise ValueError("at least one export column is required")
+    return tuple(out)
+
+
+def export_columns_with_cursor(columns: Sequence[str]) -> tuple[str, ...]:
+    out = list(normalize_export_columns(columns))
+    for col in EXPORT_CURSOR_COLUMNS:
+        if col not in out:
+            out.append(col)
+    return tuple(out)
 
 CH_STREAM_EXPORT_SETTINGS: dict[str, Any] = {
     "max_execution_time": 3600,
@@ -140,9 +169,11 @@ def leads_export_batch_sql(
     *,
     limit: int,
     cursor: ExportCursor | None = None,
+    columns: Sequence[str] | None = None,
 ) -> str:
     leads_ref = "l"
-    cols = ", ".join(f"{leads_ref}.{c}" for c in EXPORT_LEAD_COLUMNS)
+    export_columns = normalize_export_columns(columns)
+    cols = ", ".join(f"{leads_ref}.{c}" for c in export_columns)
     return f"""
 SELECT {cols}
 {_export_from_clause(compiled, leads_ref)}
@@ -161,10 +192,12 @@ def leads_export_s3_insert_sql(
     secret_key: str,
     ch_format: str,
     row_cap: int,
+    columns: Sequence[str] | None = None,
 ) -> str:
     """INSERT INTO FUNCTION s3(...) SELECT ... — single-shot export on the ClickHouse server."""
     leads_ref = "l"
-    cols = ", ".join(f"{leads_ref}.{c}" for c in EXPORT_LEAD_COLUMNS)
+    export_columns = normalize_export_columns(columns)
+    cols = ", ".join(f"{leads_ref}.{c}" for c in export_columns)
     url_lit = _ch_sql_string(s3_url)
     key_lit = _ch_sql_string(access_key)
     secret_lit = _ch_sql_string(secret_key)

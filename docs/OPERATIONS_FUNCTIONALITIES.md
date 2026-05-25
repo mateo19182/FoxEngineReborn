@@ -71,12 +71,17 @@ Also supported:
 
 Runtime ingest behavior:
 
-- source file read from object storage
+- source file streamed from object storage (no full local copy for line-oriented formats)
+- exact duplicate source files are detected by SHA-256 and rejected by default at queue time
 - parse + normalize into canonical lead fields
 - deduplicate within ingest run
-- write leads, identities, and tag links to ClickHouse in chunks
+- write leads, identities, and tag links to ClickHouse in chunks (parallel inserts per flush)
 - persist rejected rows in Postgres for CSV download
 - update batch/job counters and completion state
+
+Tuning (`FOX_` env, see `config.py`): `FOX_INGEST_FLUSH_ROWS`, `FOX_INGEST_PROGRESS_EVERY`,
+`FOX_WORKER_CONCURRENCY`. Run multiple worker containers with
+`docker compose up -d --scale worker=N`.
 
 ## Query, Related View, and Export
 
@@ -103,6 +108,8 @@ Export runtime behavior:
   - admin-only delete (soft delete)
 - Bulk apply tags from CSV:
   - upload + queue via `/api/tags/bulk-apply`
+- Tag all rows in a completed ingest batch:
+  - `POST /api/batches/{batch_id}/tags` with JSON `tag_names` (queues `batch_tag` job)
 
 ## Jobs, Batches, and Downloads
 
@@ -116,6 +123,7 @@ Export runtime behavior:
   - `foxengine_ingest_file`
   - `foxengine_export`
   - `foxengine_bulk_tag`
+  - `foxengine_batch_tag`
 
 ## Storage Browser
 

@@ -517,6 +517,58 @@ button:disabled {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
 }
 
+.export-columns-count {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.export-columns-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 0.55rem;
+  max-height: 17.5rem;
+  overflow: auto;
+  padding: 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.field .export-column-option {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.35rem 0.45rem;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.86rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.field .export-column-option:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.field .export-column-option input {
+  flex-shrink: 0;
+}
+
+.field .export-column-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .export-columns-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .query-view-switch--toolbar {
   margin-top: 0;
   padding: 2px;

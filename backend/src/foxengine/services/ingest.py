@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from foxengine.config import get_settings
 from foxengine.db.models import Batch, IngestRejection, Tag
 from foxengine.deps import Principal
+from foxengine.services.deleted_batches import (
+    lightweight_delete_batch_rows,
+    mark_batch_visibility,
+)
 from foxengine.services.ingest_rows import (
     CH_IDENTITY_INSERT_COLUMNS,
     CH_INSERT_COLUMNS,
@@ -59,6 +63,8 @@ async def ingest_sync(
     batch = Batch(name=batch_name, ingested_by=principal.user_id)
     session.add(batch)
     await session.flush()
+    await mark_batch_visibility(ch, batch.id, visible=False, reason="ingest_sync_start")
+    await lightweight_delete_batch_rows(ch, batch.id)
 
     seen_hashes: set[str] = set()
     accepted = 0
@@ -131,6 +137,7 @@ async def ingest_sync(
     batch.accepted_rows = accepted
     batch.rejected_rows = rejected
     batch.duplicate_rows = dup
+    await mark_batch_visibility(ch, batch.id, visible=True, reason="ingest_sync_done")
     await session.commit()
 
     return {

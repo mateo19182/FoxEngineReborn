@@ -152,7 +152,7 @@ def compile_tag_keys_select(
             pass
         else:
             where = f"tag_id = {where}"
-        return f"SELECT batch_id, row_in_batch FROM lead_tags WHERE {where}"
+        return f"SELECT DISTINCT batch_id, row_in_batch FROM lead_tags WHERE {where}"
 
     if isinstance(expr, Or):
         uuids: list[UUID] = []
@@ -163,7 +163,7 @@ def compile_tag_keys_select(
         where = _tag_id_in_sql(uuids, params)
         if not where.startswith("tag_id IN"):
             where = f"tag_id = {where}"
-        return f"SELECT batch_id, row_in_batch FROM lead_tags WHERE {where}"
+        return f"SELECT DISTINCT batch_id, row_in_batch FROM lead_tags WHERE {where}"
 
     if isinstance(expr, And):
         having_parts = [_tag_child_having(part, tag_uuid_lists, params) for part in expr.parts]

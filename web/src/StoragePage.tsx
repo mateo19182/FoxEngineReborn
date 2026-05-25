@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import { BatchTagForm } from "./BatchTagForm";
+import { canIngest } from "./roles";
 
 type Store = "uploads" | "exports";
 
@@ -94,6 +96,13 @@ export function StoragePage() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [downloadBusy, setDownloadBusy] = useState(false);
+  const [operator, setOperator] = useState(false);
+
+  useEffect(() => {
+    void api<{ roles: string[] }>("/auth/me")
+      .then((m) => setOperator(canIngest(m.roles)))
+      .catch(() => setOperator(false));
+  }, []);
 
   const load = useCallback(async (nextStore: Store, nextPrefix: string) => {
     const p = clampStoragePrefix(nextStore, nextPrefix);
@@ -257,6 +266,16 @@ export function StoragePage() {
           ) : (
             <p className="muted">No tags on ingested rows in this batch yet.</p>
           )}
+          {operator && folder.batch_id ? (
+            <div style={{ marginTop: "1rem" }}>
+              <BatchTagForm
+                batchId={folder.batch_id}
+                onQueued={() => {
+                  void load(store, prefix).catch((e) => setErr(String(e)));
+                }}
+              />
+            </div>
+          ) : null}
         </section>
       ) : null}
 

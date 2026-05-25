@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, getToken, onUnauthorized } from "./api";
+import { BatchTagForm } from "./BatchTagForm";
 import { DocTip } from "./DocTip";
 import { jobProgressView } from "./jobProgress";
 import { ProgressBar } from "./ProgressBar";
+import { canIngest } from "./roles";
 
 function jobTypeLabel(type: string): string {
   switch (type) {
@@ -12,6 +14,8 @@ function jobTypeLabel(type: string): string {
       return "Export";
     case "bulk_tag":
       return "Bulk tag";
+    case "batch_tag":
+      return "Batch tag";
     default:
       return type;
   }
@@ -96,6 +100,8 @@ export function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState("");
+  const [operator, setOperator] = useState(false);
+  const [tagBatchId, setTagBatchId] = useState<string | null>(null);
 
   const typeOptions = useMemo(() => {
     const types = new Set(jobs.map((j) => j.type));
@@ -111,6 +117,12 @@ export function JobsPage() {
     const j = await api<Job[]>("/jobs");
     setJobs(j);
   }
+
+  useEffect(() => {
+    void api<{ roles: string[] }>("/auth/me")
+      .then((m) => setOperator(canIngest(m.roles)))
+      .catch(() => setOperator(false));
+  }, []);
 
   useEffect(() => {
     void (async () => {
@@ -243,6 +255,20 @@ export function JobsPage() {
                           </button>
                           <DocTip text="Rows from this ingest that failed validation." />
                         </span>
+                      ) : operator &&
+                        isIngestJob(j.type) &&
+                        j.state === "done" &&
+                        j.batch_id &&
+                        (j.accepted_rows ?? 0) > 0 ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() =>
+                            setTagBatchId((cur) => (cur === j.batch_id ? null : j.batch_id))
+                          }
+                        >
+                          {tagBatchId === j.batch_id ? "Close tags" : "Add tags"}
+                        </button>
                       ) : null}
                     </td>
                   </tr>
@@ -254,6 +280,20 @@ export function JobsPage() {
           )}
         </section>
       )}
+
+      {tagBatchId ? (
+        <section className="panel" style={{ marginTop: "1rem" }}>
+          <div className="panel__head">
+            <h2>Tag batch</h2>
+          </div>
+          <BatchTagForm
+            batchId={tagBatchId}
+            onQueued={() => {
+              void load().catch((e) => setErr(String(e)));
+            }}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }

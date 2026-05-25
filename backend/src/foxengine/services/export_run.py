@@ -23,6 +23,7 @@ from foxengine.services.export_query import (
     ExportCursor,
     export_object_key,
     export_s3_url,
+    normalize_export_columns,
 )
 from foxengine.services.export_s3 import ExportS3Writer
 from foxengine.services.export_stream import export_streaming_to_s3, try_export_clickhouse_s3
@@ -67,6 +68,14 @@ async def run_export_job(job_id: UUID) -> None:
             return
         if fmt not in ("csv", "jsonl"):
             await _fail_job(session, job_id, f"unsupported format: {fmt!r}")
+            return
+        columns_raw = ck.get("columns")
+        try:
+            columns = normalize_export_columns(
+                columns_raw if isinstance(columns_raw, list) else None
+            )
+        except ValueError as e:
+            await _fail_job(session, job_id, str(e))
             return
 
         owner = job.owner_user_id
@@ -150,6 +159,7 @@ async def run_export_job(job_id: UUID) -> None:
                         secret_key=s.s3_secret_access_key,
                         export_format=fmt,
                         row_cap=row_cap,
+                        columns=columns,
                         query_id=query_id,
                     )
                 finally:
@@ -196,6 +206,7 @@ async def run_export_job(job_id: UUID) -> None:
                     upload_id=upload_id,
                     completed_parts=prior_parts,
                     next_part_number=next_part,
+                    abort_on_exception=False,
                 ) as writer:
 
                     async def on_batch(processed: int, cursor: ExportCursor | None) -> None:
@@ -230,6 +241,7 @@ async def run_export_job(job_id: UUID) -> None:
                         row_cap=remaining,
                         batch_size=s.export_batch_size,
                         cursor=resume_cursor,
+                        columns=columns,
                         csv_include_header=resume_cursor is None,
                         on_batch=on_batch,
                     )

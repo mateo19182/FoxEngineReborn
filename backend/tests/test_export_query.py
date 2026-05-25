@@ -8,6 +8,7 @@ from foxengine.services.export_query import (
     export_s3_url,
     leads_export_batch_sql,
     leads_export_s3_insert_sql,
+    normalize_export_columns,
 )
 
 
@@ -21,6 +22,16 @@ class TestExportQuery(unittest.TestCase):
         self.assertNotIn("cursor_ts", sql)
         self.assertIn("ORDER BY l.ingest_ts DESC", sql)
         self.assertIn("LIMIT 100", sql)
+
+    def test_batch_sql_uses_selected_columns(self) -> None:
+        compiled = CompiledLeadsQuery(leads_where="1 = 1", parameters={})
+        sql = leads_export_batch_sql(
+            compiled,
+            limit=100,
+            columns=["email_raw", "username"],
+        )
+        self.assertIn("SELECT l.email_raw, l.username", sql)
+        self.assertNotIn("l.password", sql)
 
     def test_keyset_clause_with_cursor(self) -> None:
         compiled = CompiledLeadsQuery(leads_where="1 = 1", parameters={})
@@ -48,6 +59,24 @@ class TestExportQuery(unittest.TestCase):
         self.assertIn("CSVWithNames", sql)
         self.assertIn("LIMIT 1000", sql)
         self.assertNotIn("tag_ids", sql)
+
+    def test_s3_insert_sql_uses_selected_columns(self) -> None:
+        compiled = CompiledLeadsQuery(leads_where="1 = 1", parameters={})
+        sql = leads_export_s3_insert_sql(
+            compiled,
+            s3_url="http://rustfs:9000/exports/job/result.csv",
+            access_key="ak",
+            secret_key="sk",
+            ch_format="CSVWithNames",
+            row_cap=1000,
+            columns=["email_raw", "username"],
+        )
+        self.assertIn("SELECT l.email_raw, l.username", sql)
+        self.assertNotIn("l.password", sql)
+
+    def test_normalize_export_columns_rejects_unknown(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_export_columns(["email_raw", "not_a_column"])
 
     def test_export_s3_url(self) -> None:
         self.assertEqual(

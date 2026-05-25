@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS leads (
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(ingest_ts)
-ORDER BY (batch_id, row_in_batch)
+ORDER BY (ingest_ts, batch_id, row_in_batch)
 SETTINGS index_granularity = 8192;
 """,
     """
@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS lead_tags (
 ENGINE = ReplacingMergeTree(assigned_at)
 PARTITION BY toYYYYMM(assigned_at)
 ORDER BY (tag_id, batch_id, row_in_batch)
+SETTINGS index_granularity = 8192;
+""",
+    """
+CREATE TABLE IF NOT EXISTS batch_visibility (
+    batch_id UUID,
+    visible UInt8,
+    updated_at DateTime DEFAULT now(),
+    version UInt64 DEFAULT toUnixTimestamp64Micro(now64(6)),
+    reason LowCardinality(String) DEFAULT ''
+)
+ENGINE = ReplacingMergeTree(version)
+ORDER BY batch_id
 SETTINGS index_granularity = 8192;
 """,
 ]

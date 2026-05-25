@@ -49,6 +49,12 @@ class Settings(BaseSettings):
 
     max_index_rows_sync: int = 5000
 
+    ingest_flush_rows: int = 50_000
+    ingest_progress_every: int = 50_000
+    ingest_s3_read_chunk_bytes: int = 1024 * 1024
+
+    worker_concurrency: int = 4
+
     max_export_rows: int = 5_000_000
 
     export_use_ch_s3: bool = True

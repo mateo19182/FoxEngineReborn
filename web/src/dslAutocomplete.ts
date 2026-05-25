@@ -110,7 +110,7 @@ export function analyzeDslAtCursor(text: string, cursor: number): DslCompletionC
       kind: "in_value",
       field: token.slice(0, colonIdx).toLowerCase(),
       prefix: token.slice(colonIdx + 1),
-      tokenStart,
+      tokenStart: tokenStart + colonIdx + 1,
       tokenEnd,
     };
   }

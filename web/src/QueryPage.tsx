@@ -54,7 +54,7 @@ const QUERY_PAGE = 50;
 export function QueryPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [dsl, setDsl] = useState("email:*@example.com");
+  const [dsl, setDsl] = useState("");
   const [view, setView] = useState<QueryView>("rows");
   const [res, setRes] = useState<QueryResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);

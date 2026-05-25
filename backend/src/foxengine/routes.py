@@ -34,10 +34,23 @@ from foxengine.db.models import (
     UserRole,
 )
 from foxengine.deps import AdminDep, OperatorDep, PrincipalDep, SessionDep, ViewerDep
+from foxengine.dsl.fields import DSL_FIELD_SPECS
+from foxengine.dsl.sql import CompiledLeadsQuery
 from foxengine.security import hash_password, issue_jwt, new_api_key_material, verify_password
 from foxengine.services.archive_unpack import merge_text_parts, unpack_archive
 from foxengine.services.assistant_chat import run_assistant_stream, run_assistant_turn
+from foxengine.services.batch_purge import schedule_batch_purge
+from foxengine.services.batch_tag import (
+    assert_batch_taggable,
+    can_manage_batch,
+    queue_batch_tag_job,
+)
 from foxengine.services.column_map_llm import suggest_column_map_with_llm
+from foxengine.services.deleted_batches import (
+    batch_clickhouse_counts,
+    deleted_batch_sql_clause,
+    mark_batch_visibility,
+)
 from foxengine.services.file_hash import sha256_hex
 from foxengine.services.format_detect import (
     CANONICAL,
@@ -48,14 +61,17 @@ from foxengine.services.format_detect import (
     is_delimited_text_filename,
 )
 from foxengine.services.ingest import ingest_sync
-from foxengine.services.batch_purge import schedule_batch_purge
-from foxengine.services.deleted_batches import batch_clickhouse_counts, deleted_batch_sql_clause
-from foxengine.dsl.sql import CompiledLeadsQuery
-from foxengine.services.job_queries import compile_leads_where, leads_count_sql, leads_select_sql
+from foxengine.services.job_queries import (
+    attach_tag_ids,
+    compile_leads_where,
+    fetch_lead_tag_ids,
+    leads_count_sql,
+    leads_select_sql,
+)
 from foxengine.services.llm_client import LlmError, LlmUnavailableError, llm_health_status
-from foxengine.dsl.fields import DSL_FIELD_SPECS
 from foxengine.services.nl_to_dsl import translate_nl_to_dsl
 from foxengine.services.related_rows import annotate_related_groups, collect_identity_values
+from foxengine.services.tags_resolve import TagResolveError
 from foxengine.settings_store import (
     is_setup_complete,
     mark_setup_complete,
@@ -63,6 +79,7 @@ from foxengine.settings_store import (
     write_jwt_secret,
 )
 from foxengine.tasks import (
+    foxengine_batch_tag,
     foxengine_bulk_tag,
     foxengine_export,
     foxengine_ingest_file,
@@ -739,6 +756,8 @@ async def run_query(
     t0 = time.perf_counter()
     try:
         compiled = await compile_leads_where(session, body.dsl)
+    except TagResolveError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
     except Exception as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid dsl: {e}") from e
 
@@ -799,6 +818,12 @@ async def run_query(
             key = (str(row["batch_id"]), int(row["row_in_batch"]))
             by_key.setdefault(key, row)
         out_rows = annotate_related_groups(list(by_key.values()), matched_keys)
+
+    if out_rows:
+        keys = [(str(row["batch_id"]), int(row["row_in_batch"])) for row in out_rows]
+        tag_ids_by_key = await fetch_lead_tag_ids(ch, keys, settings=settings_ch)
+        attach_tag_ids(out_rows, tag_ids_by_key)
+
     ms = int((time.perf_counter() - t0) * 1000)
     _audit(
         request,
@@ -1272,6 +1297,25 @@ async def _duplicate_match_for_hash(
     )
 
 
+async def _check_duplicate_upload_allowed(
+    session: AsyncSession,
+    *,
+    source_sha256: str,
+    inner_name: str,
+    allow_duplicate_upload: bool,
+) -> schemas.IngestDuplicateMatch | None:
+    duplicate_match = await _duplicate_match_for_hash(session, source_sha256)
+    if duplicate_match is None or allow_duplicate_upload:
+        return duplicate_match
+    label = duplicate_match.existing_filename or duplicate_match.existing_batch_name
+    existing = f" ({label})" if label else ""
+    raise HTTPException(
+        status.HTTP_409_CONFLICT,
+        f"duplicate upload: {inner_name} already exists in batch "
+        f"{duplicate_match.existing_batch_id}{existing}",
+    )
+
+
 def _upload_checkpoint_parts(upload: Job) -> list[dict[str, Any]]:
     raw_parts = dict(upload.checkpoint or {}).get("parts")
     if not isinstance(raw_parts, list):
@@ -1568,6 +1612,48 @@ async def get_batch(batch_id: UUID, session: SessionDep, _: ViewerDep) -> schema
     )
 
 
+@router.post("/batches/{batch_id}/tags", response_model=schemas.BatchTagResponse)
+async def apply_batch_tags(
+    request: Request,
+    batch_id: UUID,
+    body: schemas.BatchTagRequest,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> schemas.BatchTagResponse:
+    tag_names = [n.strip() for n in body.tag_names if n.strip()]
+    if not tag_names:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tag_names required")
+
+    res = await session.execute(
+        select(Batch).where(Batch.id == batch_id, Batch.deleted_at.is_(None))
+    )
+    batch = res.scalar_one_or_none()
+    if batch is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    if not can_manage_batch(principal, batch):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+
+    await assert_batch_taggable(session, batch_id=batch_id, batch=batch)
+
+    job = await queue_batch_tag_job(
+        session,
+        batch=batch,
+        tag_names=tag_names,
+        principal=principal,
+    )
+    _audit(
+        request,
+        principal,
+        "batch.tag.apply",
+        target_kind="batch",
+        target_id=str(batch_id),
+        details={"job_id": str(job.id), "tag_names": tag_names},
+    )
+    await session.commit()
+    await foxengine_batch_tag.defer_async(job_id=str(job.id))
+    return schemas.BatchTagResponse(job_id=str(job.id))
+
+
 @router.get("/batches/{batch_id}/delete-preview", response_model=schemas.BatchDeletePreview)
 async def batch_delete_preview(
     batch_id: UUID,
@@ -1602,6 +1688,7 @@ async def delete_batch(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
 
     ch = await get_ch_client()
+    await mark_batch_visibility(ch, batch_id, visible=False, reason="batch_delete")
     purge_job_id: str | None = None
 
     if b.deleted_at is None:
@@ -1756,6 +1843,8 @@ async def start_export(
     ckpt: dict[str, object] = {"dsl": body.dsl, "format": body.format}
     if body.row_limit is not None:
         ckpt["row_limit"] = body.row_limit
+    if body.columns is not None:
+        ckpt["columns"] = body.columns
     job = Job(
         type="export",
         state="queued",
@@ -1774,6 +1863,7 @@ async def start_export(
             "dsl": body.dsl,
             "format": body.format,
             **({"row_limit": body.row_limit} if body.row_limit is not None else {}),
+            **({"columns": body.columns} if body.columns is not None else {}),
         },
     )
     await session.commit()
@@ -2011,15 +2101,29 @@ async def ingest_file_from_upload(
                 }
             ]
 
+        duplicate_matches: list[schemas.IngestDuplicateMatch | None] = []
         for part in parts_to_queue:
+            inner_name = str(part.get("inner_name") or "")
+            source_sha256 = str(part.get("source_sha256") or "").strip()
+            if not inner_name or not source_sha256:
+                duplicate_matches.append(None)
+                continue
+            duplicate_matches.append(
+                await _check_duplicate_upload_allowed(
+                    session,
+                    source_sha256=source_sha256,
+                    inner_name=inner_name,
+                    allow_duplicate_upload=body.allow_duplicate_upload,
+                )
+            )
+
+        for part_idx, part in enumerate(parts_to_queue):
             inner_name = str(part.get("inner_name") or "")
             staging_key = str(part.get("staging_key") or "")
             if not inner_name or not staging_key:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid staged upload part")
             source_sha256 = str(part.get("source_sha256") or "").strip()
-            duplicate_match = (
-                await _duplicate_match_for_hash(session, source_sha256) if source_sha256 else None
-            )
+            duplicate_match = duplicate_matches[part_idx] if part_idx < len(duplicate_matches) else None
 
             raw_fmt = part.get("format")
             if not isinstance(raw_fmt, str):
@@ -2153,6 +2257,7 @@ async def ingest_file(
     column_map_json: str | None = Form(default=None),
     column_map_by_file_json: str | None = Form(default=None),
     merge_archive: str = Form("false"),
+    allow_duplicate_upload: str = Form("false"),
 ) -> schemas.IngestQueuedResponse:
     fmt_in = format.strip().lower()
     if fmt_in not in ("auto", "jsonl", "csv", "combo"):
@@ -2170,8 +2275,50 @@ async def ingest_file(
     outer_fn = file.filename or "upload.bin"
     parts = unpack_archive(outer_fn, data)
     merge = _form_bool(merge_archive)
+    allow_duplicate = _form_bool(allow_duplicate_upload)
     if merge and len(parts) > 1:
         parts = [merge_text_parts(parts)]
+
+    prepared_parts: list[dict[str, Any]] = []
+    for inner_name, blob in parts:
+        source_sha256 = sha256_hex(blob)
+        duplicate_match = await _check_duplicate_upload_allowed(
+            session,
+            source_sha256=source_sha256,
+            inner_name=inner_name,
+            allow_duplicate_upload=allow_duplicate,
+        )
+        try:
+            resolved_fmt, detect_extras = detect_for_ingest(inner_name, blob, fmt_in)
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+        auto_map = detect_extras.get("column_map")
+        merged_map: dict[str, str] = {}
+        column_map_source = "auto"
+        manual_map: dict[str, str] | None = None
+        if user_maps_by_file_provided and inner_name in user_maps_by_file:
+            manual_map = user_maps_by_file[inner_name]
+        elif user_column_map_provided:
+            manual_map = user_column_map
+
+        if manual_map is not None and resolved_fmt in ("csv", "jsonl", "txt"):
+            merged_map.update(manual_map)
+            column_map_source = "manual"
+        elif isinstance(auto_map, dict):
+            merged_map.update({str(k): str(v) for k, v in auto_map.items()})
+
+        prepared_parts.append(
+            {
+                "inner_name": inner_name,
+                "blob": blob,
+                "source_sha256": source_sha256,
+                "duplicate_match": duplicate_match,
+                "resolved_fmt": resolved_fmt,
+                "detect_extras": detect_extras,
+                "merged_map": merged_map,
+                "column_map_source": column_map_source,
+            }
+        )
 
     s = get_settings()
     items_out: list[dict[str, Any]] = []
@@ -2183,35 +2330,22 @@ async def ingest_file(
         aws_secret_access_key=s.s3_secret_access_key,
         region_name=s.s3_region,
     ) as c:
-        for inner_name, blob in parts:
-            source_sha256 = sha256_hex(blob)
-            duplicate_match = await _duplicate_match_for_hash(session, source_sha256)
-            try:
-                resolved_fmt, detect_extras = detect_for_ingest(inner_name, blob, fmt_in)
-            except ValueError as e:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-            auto_map = detect_extras.get("column_map")
-            merged_map: dict[str, str] = {}
-            column_map_source = "auto"
-            manual_map: dict[str, str] | None = None
-            if user_maps_by_file_provided and inner_name in user_maps_by_file:
-                manual_map = user_maps_by_file[inner_name]
-            elif user_column_map_provided:
-                manual_map = user_column_map
-
-            if manual_map is not None and resolved_fmt in ("csv", "jsonl", "txt"):
-                merged_map.update(manual_map)
-                column_map_source = "manual"
-            elif isinstance(auto_map, dict):
-                merged_map.update({str(k): str(v) for k, v in auto_map.items()})
-
+        for part in prepared_parts:
+            inner_name = str(part["inner_name"])
+            blob = cast(bytes, part["blob"])
+            source_sha256 = str(part["source_sha256"])
+            duplicate_match = cast(schemas.IngestDuplicateMatch | None, part["duplicate_match"])
+            resolved_fmt = str(part["resolved_fmt"])
+            detect_extras = cast(dict[str, Any], part["detect_extras"])
+            merged_map = cast(dict[str, str], part["merged_map"])
+            column_map_source = str(part["column_map_source"])
             batch_id = uuid4()
             job_id = uuid4()
             safe = _inner_storage_key(inner_name)
             key = f"uploads/{batch_id}/{safe}"
             await c.put_object(Bucket=s.s3_bucket_uploads, Key=key, Body=blob)
 
-            if len(parts) == 1 and not merge:
+            if len(prepared_parts) == 1 and not merge:
                 display_name = batch_name or outer_fn
             else:
                 base = batch_name or outer_fn

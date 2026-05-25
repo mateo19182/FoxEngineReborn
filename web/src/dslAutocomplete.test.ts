@@ -34,7 +34,8 @@ describe("analyzeDslAtCursor", () => {
       kind: "in_value",
       field: "tag",
       prefix: "smok",
-      tokenStart: 0,
+      tokenStart: 4,
+      tokenEnd: 8,
     });
   });
 
@@ -108,5 +109,18 @@ describe("applyDslSuggestion", () => {
     const { next, cursor } = applyDslSuggestion(dsl, suggestion, ctx);
     expect(next).toBe("email:");
     expect(cursor).toBe(6);
+  });
+
+  it("keeps field prefix when completing tag values", () => {
+    const dsl = "tag:sm";
+    const ctx = analyzeDslAtCursor(dsl, dsl.length)!;
+    const suggestion = {
+      label: "smoke-tag",
+      insert: "smoke-tag",
+      detail: "Tag name",
+    };
+    const { next, cursor } = applyDslSuggestion(dsl, suggestion, ctx);
+    expect(next).toBe("tag:smoke-tag");
+    expect(cursor).toBe("tag:smoke-tag".length);
   });
 });

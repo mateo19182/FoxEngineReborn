@@ -258,6 +258,7 @@ export function IngestPage() {
     : previewLoading
       ? "Previewing..."
       : "Preview detection";
+  const processingPreview = previewLoading && uploadPercent != null && uploadPercent >= 100;
 
   function updateColumnSelections(next: Record<string, Record<string, string>>) {
     setColumnSelectionsByFile(next);
@@ -517,10 +518,12 @@ export function IngestPage() {
             {previewLoading ? (
               <ProgressBar
                 className="upload-progress"
-                value={uploadPercent}
-                indeterminate={uploadPercent == null}
+                value={processingPreview ? null : uploadPercent}
+                indeterminate={uploadPercent == null || processingPreview}
                 label={
-                  uploadPercent != null
+                  processingPreview
+                    ? "Processing preview..."
+                    : uploadPercent != null
                     ? `Uploading ${uploadPercent}%`
                     : "Uploading…"
                 }
@@ -645,8 +648,8 @@ export function IngestPage() {
                   <strong>Duplicate file warning</strong>
                   <p className="hint">
                     {duplicatePreviewFiles.length} selected file
-                    {duplicatePreviewFiles.length === 1 ? "" : "s"} already exist in earlier batches. You can
-                    still queue this upload.
+                    {duplicatePreviewFiles.length === 1 ? "" : "s"} already exist in earlier batches. Queueing
+                    will be blocked by default.
                   </p>
                   <ul className="ingest-preview-files">
                     {duplicatePreviewFiles.map((item) => (

@@ -9,9 +9,43 @@ type ExportModalProps = {
   onQueued: (jobId: string) => void;
 };
 
+const EXPORT_COLUMNS = [
+  { id: "batch_id", label: "Batch ID" },
+  { id: "row_in_batch", label: "Row in batch" },
+  { id: "ingest_ts", label: "Ingested" },
+  { id: "phone_norm", label: "Phone normalized" },
+  { id: "phone_raw", label: "Phone raw" },
+  { id: "email_norm", label: "Email normalized" },
+  { id: "email_raw", label: "Email raw" },
+  { id: "email_local", label: "Email local" },
+  { id: "email_domain", label: "Email domain" },
+  { id: "username", label: "Username" },
+  { id: "id_card", label: "ID card" },
+  { id: "full_name", label: "Full name" },
+  { id: "first_name", label: "First name" },
+  { id: "last_name", label: "Last name" },
+  { id: "dob", label: "DOB" },
+  { id: "gender", label: "Gender" },
+  { id: "address", label: "Address" },
+  { id: "city", label: "City" },
+  { id: "country", label: "Country" },
+  { id: "zip", label: "ZIP" },
+  { id: "ip", label: "IP" },
+  { id: "user_agent", label: "User agent" },
+  { id: "isp", label: "ISP" },
+  { id: "phone_carrier", label: "Carrier" },
+  { id: "password", label: "Password" },
+  { id: "password_hash", label: "Password hash" },
+  { id: "last_seen", label: "Last seen" },
+  { id: "extras", label: "Extras" },
+] as const;
+
+const ALL_EXPORT_COLUMN_IDS = EXPORT_COLUMNS.map((column) => column.id);
+
 export function ExportModal({ open, onClose, dsl, onQueued }: ExportModalProps) {
   const [format, setFormat] = useState<"csv" | "jsonl">("csv");
   const [limitStr, setLimitStr] = useState("");
+  const [selectedColumns, setSelectedColumns] = useState<string[]>(ALL_EXPORT_COLUMN_IDS);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -19,6 +53,7 @@ export function ExportModal({ open, onClose, dsl, onQueued }: ExportModalProps) 
     if (!open) return;
     setFormat("csv");
     setLimitStr("");
+    setSelectedColumns(ALL_EXPORT_COLUMN_IDS);
     setErr(null);
     setBusy(false);
   }, [open]);
@@ -42,9 +77,18 @@ export function ExportModal({ open, onClose, dsl, onQueued }: ExportModalProps) 
       }
       row_limit = n;
     }
+    if (selectedColumns.length === 0) {
+      setErr("Choose at least one column.");
+      return;
+    }
     setBusy(true);
     try {
-      const payload: { dsl: string; format: "csv" | "jsonl"; row_limit?: number } = { dsl, format };
+      const payload: {
+        dsl: string;
+        format: "csv" | "jsonl";
+        row_limit?: number;
+        columns: string[];
+      } = { dsl, format, columns: selectedColumns };
       if (row_limit !== undefined) payload.row_limit = row_limit;
       const { job_id } = await api<{ job_id: string }>("/export", {
         method: "POST",
@@ -59,8 +103,15 @@ export function ExportModal({ open, onClose, dsl, onQueued }: ExportModalProps) 
     }
   }
 
+  function toggleColumn(columnId: string) {
+    setSelectedColumns((prev) => {
+      if (prev.includes(columnId)) return prev.filter((id) => id !== columnId);
+      return ALL_EXPORT_COLUMN_IDS.filter((id) => id === columnId || prev.includes(id));
+    });
+  }
+
   return (
-    <Modal open={open} title="Export leads" onClose={handleClose}>
+    <Modal open={open} title="Export leads" onClose={handleClose} wide>
       <form onSubmit={submit}>
         <p className="hint" style={{ marginTop: 0 }}>
           Queues a background job that streams every row matching the current DSL (not only the preview page). Download
@@ -102,6 +153,45 @@ export function ExportModal({ open, onClose, dsl, onQueued }: ExportModalProps) 
             value={limitStr}
             onChange={(e) => setLimitStr(e.target.value)}
           />
+        </div>
+        <div className="field">
+          <div className="label-row">
+            <span>Columns</span>
+            <span className="export-columns-count">
+              {selectedColumns.length}/{EXPORT_COLUMNS.length}
+            </span>
+            <div className="label-row__tools">
+              <button
+                type="button"
+                className="link-btn"
+                onClick={() => setSelectedColumns(ALL_EXPORT_COLUMN_IDS)}
+                disabled={busy || selectedColumns.length === EXPORT_COLUMNS.length}
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                className="link-btn"
+                onClick={() => setSelectedColumns([])}
+                disabled={busy || selectedColumns.length === 0}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="export-columns-grid">
+            {EXPORT_COLUMNS.map((column) => (
+              <label key={column.id} className="export-column-option">
+                <input
+                  type="checkbox"
+                  checked={selectedColumns.includes(column.id)}
+                  onChange={() => toggleColumn(column.id)}
+                  disabled={busy}
+                />
+                <span>{column.label}</span>
+              </label>
+            ))}
+          </div>
         </div>
         {err ? <p className="error">{err}</p> : null}
         <div className="btn-row">

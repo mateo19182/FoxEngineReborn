@@ -34,11 +34,13 @@ class FakeSession:
 class DeletedBatchSqlClauseTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_when_no_deleted_batches(self):
         clause, params = await deleted_batch_sql_clause(cast(Any, FakeSession([])))
-        self.assertEqual(clause, "")
+        self.assertIn("batch_visibility", clause)
+        self.assertIn("argMax(visible, version) = 0", clause)
         self.assertEqual(params, {})
 
     async def test_not_in_clause_for_deleted_ids(self):
         bid = uuid4()
         clause, params = await deleted_batch_sql_clause(cast(Any, FakeSession([bid])))
         self.assertIn("batch_id NOT IN", clause)
+        self.assertIn("batch_visibility", clause)
         self.assertEqual(params["bd_0"], str(bid))
