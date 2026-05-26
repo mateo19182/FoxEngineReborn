@@ -1787,6 +1787,32 @@ async def get_job(job_id: UUID, session: SessionDep, principal: PrincipalDep) ->
     return _job_out(job, batch)
 
 
+@router.post("/jobs/{job_id}/recover", response_model=schemas.JobRecoverResponse)
+async def recover_job(
+    job_id: UUID,
+    session: SessionDep,
+    principal: OperatorDep,
+) -> schemas.JobRecoverResponse:
+    from foxengine.services.job_recovery import recover_fox_job
+
+    res = await session.execute(select(Job).where(Job.id == job_id))
+    job = res.scalar_one_or_none()
+    if job is None or not _can_view_job(principal, job):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    action = await recover_fox_job(job_id)
+    if action == "not_recoverable":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"job cannot be recovered from state {job.state!r}",
+        )
+    res2 = await session.execute(select(Job).where(Job.id == job_id))
+    job = res2.scalar_one()
+    batch = None
+    if job.batch_id:
+        batch = await session.scalar(select(Batch).where(Batch.id == job.batch_id))
+    return schemas.JobRecoverResponse(action=action, job=_job_out(job, batch))
+
+
 @router.get("/jobs/{job_id}/download")
 async def download_job_result(
     request: Request,

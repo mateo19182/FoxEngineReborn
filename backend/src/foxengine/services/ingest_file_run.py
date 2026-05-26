@@ -19,6 +19,12 @@ from foxengine.db.session import get_session_factory
 from foxengine.services.deleted_batches import lightweight_delete_batch_rows
 from foxengine.services.format_detect import LINE_VALUE_HEADER
 from foxengine.services.ingest import resolve_tag_ids
+from foxengine.services.ingest_resume import (
+    checkpoint_int,
+    ingest_needs_resume,
+    load_seen_hashes_from_batch,
+    max_row_in_batch,
+)
 from foxengine.services.ingest_rows import (
     RowOutcome,
     csv_row_to_raw,
@@ -71,17 +77,56 @@ async def run_ingest_file_job(job_id: UUID) -> None:
             await _fail_job(session, job_id, "batch owner missing")
             return
 
+        resuming = ingest_needs_resume(ck)
+
         await session.execute(
             update(Job)
             .where(Job.id == job_id)
             .values(state="running", started_at=datetime.now(UTC), error=None)
         )
-        await session.execute(delete(IngestRejection).where(IngestRejection.batch_id == batch.id))
+        if not resuming:
+            await session.execute(
+                delete(IngestRejection).where(IngestRejection.batch_id == batch.id)
+            )
         await session.commit()
 
         tag_ids = await resolve_tag_ids(session, tag_names, owner)
         tag_id_strs = [str(u) for u in tag_ids]
         await session.commit()
+
+    ch = await get_ch_client()
+    seen_hashes: set[str] = set()
+    if resuming:
+        async def _dedup_load_progress(loaded: int) -> None:
+            async with factory() as progress_session:
+                await progress_session.execute(
+                    update(Job)
+                    .where(Job.id == job_id)
+                    .values(
+                        checkpoint={
+                            **ck,
+                            "resume_phase": "loading_dedup",
+                            "dedup_keys_loaded": loaded,
+                        }
+                    )
+                )
+                await progress_session.commit()
+
+        seen_hashes = await load_seen_hashes_from_batch(
+            ch, batch.id, on_progress=_dedup_load_progress
+        )
+        rib = max(checkpoint_int(ck, "rib"), await max_row_in_batch(ch, batch.id))
+        ck = {**ck, "resume_phase": None, "dedup_keys_loaded": len(seen_hashes), "rib": rib}
+        log.info(
+            "resuming ingest job %s line=%s csv_row=%s rib=%s dedup_keys=%s",
+            job_id,
+            checkpoint_int(ck, "resume_line_index", default=-1),
+            checkpoint_int(ck, "resume_csv_row", default=-1),
+            rib,
+            len(seen_hashes),
+        )
+    else:
+        await lightweight_delete_batch_rows(ch, batch.id)
 
     pipeline = _IngestPipeline(
         job_id=job_id,
@@ -93,9 +138,15 @@ async def run_ingest_file_job(job_id: UUID) -> None:
         flush_rows=s.ingest_flush_rows,
         progress_every=s.ingest_progress_every,
         s3_chunk_bytes=s.ingest_s3_read_chunk_bytes,
+        checkpoint=ck,
+        seen_hashes=seen_hashes,
+        accepted=checkpoint_int(ck, "accepted_rows") if resuming else 0,
+        rejected=checkpoint_int(ck, "rejected_rows") if resuming else 0,
+        dup=checkpoint_int(ck, "duplicate_rows") if resuming else 0,
+        rib=checkpoint_int(ck, "rib") if resuming else 0,
+        resume_line_index=checkpoint_int(ck, "resume_line_index", default=-1) if resuming else -1,
+        resume_csv_row=checkpoint_int(ck, "resume_csv_row", default=-1) if resuming else -1,
     )
-    ch = await get_ch_client()
-    await lightweight_delete_batch_rows(ch, batch.id)
 
     session_boto = aioboto3.Session()
     async with session_boto.client(
@@ -126,6 +177,7 @@ async def run_ingest_file_job(job_id: UUID) -> None:
             await pipeline.flush(ch)
         if pipeline.rejections:
             await pipeline.flush_rejections()
+        await pipeline.persist_progress()
 
     async with factory() as session:
         await session.execute(
@@ -147,7 +199,7 @@ async def run_ingest_file_job(job_id: UUID) -> None:
                 finished_at=datetime.now(UTC),
                 processed_rows=pipeline.accepted + pipeline.rejected + pipeline.dup,
                 checkpoint={
-                    **ck,
+                    **pipeline.checkpoint,
                     "accepted_rows": pipeline.accepted,
                     "rejected_rows": pipeline.rejected,
                     "duplicate_rows": pipeline.dup,
@@ -170,6 +222,14 @@ class _IngestPipeline:
         flush_rows: int,
         progress_every: int,
         s3_chunk_bytes: int,
+        checkpoint: dict[str, Any],
+        seen_hashes: set[str],
+        accepted: int,
+        rejected: int,
+        dup: int,
+        rib: int,
+        resume_line_index: int,
+        resume_csv_row: int,
     ) -> None:
         self.job_id = job_id
         self.batch_id = batch_id
@@ -180,20 +240,37 @@ class _IngestPipeline:
         self.flush_rows = flush_rows
         self.progress_every = progress_every
         self.s3_chunk_bytes = s3_chunk_bytes
+        self.checkpoint = dict(checkpoint)
 
         self.pending_rows: list[tuple[list[Any], str]] = []
         self.rejections: list[tuple[int, str, str]] = []
-        self.seen_hashes: set[str] = set()
-        self.accepted = 0
-        self.rejected = 0
-        self.dup = 0
-        self.rib = 0
+        self.seen_hashes = seen_hashes
+        self.accepted = accepted
+        self.rejected = rejected
+        self.dup = dup
+        self.rib = rib
+        self.resume_line_index = resume_line_index
+        self.resume_csv_row = resume_csv_row
+        self.last_line_index = resume_line_index
+        self.last_csv_row = resume_csv_row
         self.ts = ingest_timestamp()
-        self._next_progress_at = progress_every
+        self._next_progress_at = self.processed_total() + progress_every
         self._rejection_flush_rows = min(max(flush_rows, 1), 10_000)
 
     def processed_total(self) -> int:
         return self.accepted + len(self.pending_rows) + self.rejected + self.dup
+
+    def should_skip_line(self, line_index: int) -> bool:
+        return line_index <= self.resume_line_index
+
+    def should_skip_csv_row(self, csv_row_index: int) -> bool:
+        return csv_row_index <= self.resume_csv_row
+
+    def note_line_index(self, line_index: int) -> None:
+        self.last_line_index = line_index
+
+    def note_csv_row(self, csv_row_index: int) -> None:
+        self.last_csv_row = csv_row_index
 
     def append_raw(self, raw: dict[str, Any], line_no: int) -> None:
         self.dup, self.rejected = _append_row(
@@ -231,9 +308,9 @@ class _IngestPipeline:
             await self.flush(ch)
         if needs_rejection_flush:
             await self.flush_rejections()
-        if needs_progress:
+        if needs_progress or needs_flush:
             self._next_progress_at = total + self.progress_every
-            await self.report_progress(total)
+            await self.persist_progress()
 
     async def flush(self, ch: Any) -> None:
         pending = self.pending_rows
@@ -270,11 +347,32 @@ class _IngestPipeline:
             )
             await session.commit()
 
-    async def report_progress(self, processed: int) -> None:
+    async def persist_progress(self) -> None:
+        processed = self.processed_total()
+        self.checkpoint = {
+            **self.checkpoint,
+            "rib": self.rib,
+            "accepted_rows": self.accepted,
+            "rejected_rows": self.rejected,
+            "duplicate_rows": self.dup,
+            "resume_line_index": self.last_line_index,
+            "resume_csv_row": self.last_csv_row,
+        }
         factory = get_session_factory()
         async with factory() as progress_session:
             await progress_session.execute(
-                update(Job).where(Job.id == self.job_id).values(processed_rows=processed)
+                update(Batch)
+                .where(Batch.id == self.batch_id)
+                .values(
+                    accepted_rows=self.accepted,
+                    rejected_rows=self.rejected,
+                    duplicate_rows=self.dup,
+                )
+            )
+            await progress_session.execute(
+                update(Job)
+                .where(Job.id == self.job_id)
+                .values(processed_rows=processed, checkpoint=self.checkpoint)
             )
             await progress_session.commit()
 
@@ -305,6 +403,9 @@ async def _ingest_jsonl(
                 await _fail_job(session, job_id, "json root must be an array")
             return False
         for i, item in enumerate(parsed):
+            if pipeline.should_skip_line(i):
+                continue
+            pipeline.note_line_index(i)
             line_no = i + 1
             if not isinstance(item, dict):
                 pipeline.rejections.append((line_no, "json must be object", str(item)[:8000]))
@@ -316,13 +417,17 @@ async def _ingest_jsonl(
             await pipeline.tick(ch)
         return True
 
-    line_no = 0
+    line_index = -1
     async for raw_s in iter_utf8_lines(
         body,
         chunk_size=pipeline.s3_chunk_bytes,
         initial=head_chunk,
     ):
-        line_no += 1
+        line_index += 1
+        if pipeline.should_skip_line(line_index):
+            continue
+        pipeline.note_line_index(line_index)
+        line_no = line_index + 1
         raw_s = raw_s.strip()
         if not raw_s or raw_s.startswith("#"):
             continue
@@ -352,9 +457,13 @@ async def _ingest_txt(
 ) -> bool:
     del job_id, factory
     target_field = pipeline.column_map_s.get(LINE_VALUE_HEADER, "").strip()
-    line_no = 0
+    line_index = -1
     async for raw_s in iter_utf8_lines(body, chunk_size=pipeline.s3_chunk_bytes):
-        line_no += 1
+        line_index += 1
+        if pipeline.should_skip_line(line_index):
+            continue
+        pipeline.note_line_index(line_index)
+        line_no = line_index + 1
         raw_s = raw_s.strip()
         if not raw_s or raw_s.startswith("#"):
             continue
@@ -376,17 +485,22 @@ async def _ingest_csv(
     job_id: UUID,
     factory: Any,
 ) -> bool:
-    line_no = 0
+    line_index = -1
+    csv_row_index = -1
     header: list[str] | None = None
     async for raw_s in iter_utf8_lines(body, chunk_size=pipeline.s3_chunk_bytes):
-        line_no += 1
+        line_index += 1
         if not raw_s.strip():
             continue
         row_cells = next(csv.reader([raw_s], delimiter=csv_delim))
         if header is None:
             header = [h.strip() for h in row_cells]
             continue
-        data_line_no = line_no
+        csv_row_index += 1
+        if pipeline.should_skip_csv_row(csv_row_index):
+            continue
+        pipeline.note_csv_row(csv_row_index)
+        data_line_no = line_index + 1
         raw = csv_row_to_raw(
             header,
             row_cells,
@@ -410,9 +524,13 @@ async def _ingest_combo(
     factory: Any,
 ) -> bool:
     del job_id, factory
-    line_no = 0
+    line_index = -1
     async for raw_s in iter_utf8_lines(body, chunk_size=pipeline.s3_chunk_bytes):
-        line_no += 1
+        line_index += 1
+        if pipeline.should_skip_line(line_index):
+            continue
+        pipeline.note_line_index(line_index)
+        line_no = line_index + 1
         raw_s = raw_s.strip()
         if not raw_s or raw_s.startswith("#"):
             continue

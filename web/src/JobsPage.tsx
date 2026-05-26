@@ -118,6 +118,11 @@ export function JobsPage() {
     setJobs(j);
   }
 
+  async function recoverJob(id: string) {
+    await api<{ action: string }>(`/jobs/${id}/recover`, { method: "POST" });
+    await load();
+  }
+
   useEffect(() => {
     void api<{ roles: string[] }>("/auth/me")
       .then((m) => setOperator(canIngest(m.roles)))
@@ -227,6 +232,15 @@ export function JobsPage() {
                     <td>{j.state}</td>
                     <td>{j.error ?? ""}</td>
                     <td>
+                      {operator && (j.state === "running" || j.state === "queued") ? (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => recoverJob(j.id).catch((e) => setErr(String(e)))}
+                        >
+                          Recover
+                        </button>
+                      ) : null}
                       {j.state === "done" && j.result_uri ? (
                         <span className="btn-with-tip">
                           <button

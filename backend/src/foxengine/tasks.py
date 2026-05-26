@@ -25,6 +25,14 @@ def _connector() -> PsycopgConnector:
 pg_app = App(connector=_connector())
 
 
+@pg_app.periodic(cron="*/10 * * * *")
+@pg_app.task(queueing_lock="retry_stalled_jobs", pass_context=True)
+async def retry_stalled_jobs_task(context, timestamp: int) -> None:
+    from foxengine.services.job_recovery import retry_stalled_procrastinate_jobs
+
+    await retry_stalled_procrastinate_jobs()
+
+
 async def _fail_job_state(job_id: UUID, msg: str) -> None:
     from datetime import UTC, datetime
 

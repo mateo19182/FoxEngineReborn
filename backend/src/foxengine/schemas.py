@@ -420,6 +420,11 @@ class JobOut(BaseModel):
     ingest_ts: str | None = None
 
 
+class JobRecoverResponse(BaseModel):
+    action: str
+    job: JobOut
+
+
 class BatchOut(BaseModel):
     id: str
     name: str | None
