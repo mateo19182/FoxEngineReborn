@@ -96,12 +96,12 @@ async def run_bulk_tag_job(job_id: UUID) -> None:
     facet_set: list[tuple[str, str]] = []
     seen_facets: set[tuple[str, str]] = set()
     for row in reader:
-        email = pick(row, "email", "email_norm")
-        phone = pick(row, "phone", "phone_norm", "phone_raw")
+        email = pick(row, "email")
+        phone = pick(row, "phone")
         username = pick(row, "username")
         id_card = pick(row, "id_card", "id")
-        pn, _ = normalize_phone(phone or None)
-        en, _ = normalize_email(email or None)
+        pn = normalize_phone(phone or None)
+        en = normalize_email(email or None)
         u = username.strip()
         ic = id_card.strip()
         if not has_any_identity(pn, en, u, ic):

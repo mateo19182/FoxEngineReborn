@@ -5,12 +5,10 @@ CREATE TABLE IF NOT EXISTS leads (
     row_in_batch UInt32,
     ingest_ts DateTime DEFAULT now(),
 
-    phone_norm String,
-    phone_raw String,
-    email_norm String,
-    email_raw String,
-    email_local String MATERIALIZED splitByChar('@', email_norm)[1],
-    email_domain LowCardinality(String) MATERIALIZED splitByChar('@', email_norm)[2],
+    phone String,
+    email String,
+    email_local String MATERIALIZED splitByChar('@', email)[1],
+    email_domain LowCardinality(String) MATERIALIZED splitByChar('@', email)[2],
     username String,
     id_card String,
 
@@ -33,8 +31,8 @@ CREATE TABLE IF NOT EXISTS leads (
 
     extras Map(String, String),
 
-    INDEX idx_phone_ngram phone_norm TYPE ngrambf_v1(3, 2048, 3, 0) GRANULARITY 4,
-    INDEX idx_email_ngram email_norm TYPE ngrambf_v1(3, 2048, 3, 0) GRANULARITY 4,
+    INDEX idx_phone_ngram phone TYPE ngrambf_v1(3, 2048, 3, 0) GRANULARITY 4,
+    INDEX idx_email_ngram email TYPE ngrambf_v1(3, 2048, 3, 0) GRANULARITY 4,
     INDEX idx_username_ngram username TYPE ngrambf_v1(3, 2048, 3, 0) GRANULARITY 4,
     INDEX idx_idcard_ngram id_card TYPE ngrambf_v1(3, 2048, 3, 0) GRANULARITY 4
 )
@@ -59,6 +57,18 @@ ORDER BY (identity_kind, identity_value, ingest_ts, batch_id, row_in_batch)
 SETTINGS index_granularity = 8192;
 """,
     """
+CREATE TABLE IF NOT EXISTS lead_fingerprints (
+    row_hash String,
+    batch_id UUID,
+    row_in_batch UInt32,
+    ingest_ts DateTime
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(ingest_ts)
+ORDER BY (row_hash, ingest_ts, batch_id, row_in_batch)
+SETTINGS index_granularity = 8192;
+""",
+    """
 CREATE TABLE IF NOT EXISTS lead_tags (
     tag_id UUID,
     batch_id UUID,
@@ -69,18 +79,6 @@ CREATE TABLE IF NOT EXISTS lead_tags (
 ENGINE = ReplacingMergeTree(assigned_at)
 PARTITION BY toYYYYMM(assigned_at)
 ORDER BY (tag_id, batch_id, row_in_batch)
-SETTINGS index_granularity = 8192;
-""",
-    """
-CREATE TABLE IF NOT EXISTS batch_visibility (
-    batch_id UUID,
-    visible UInt8,
-    updated_at DateTime DEFAULT now(),
-    version UInt64 DEFAULT toUnixTimestamp64Micro(now64(6)),
-    reason LowCardinality(String) DEFAULT ''
-)
-ENGINE = ReplacingMergeTree(version)
-ORDER BY batch_id
 SETTINGS index_granularity = 8192;
 """,
 ]

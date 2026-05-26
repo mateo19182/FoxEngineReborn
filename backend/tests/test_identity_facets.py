@@ -22,8 +22,8 @@ class IdentityFacetTuplesTests(unittest.TestCase):
 
     def test_related_row_facet_keys_match_identities(self) -> None:
         row = {
-            "phone_norm": "+34123456789",
-            "email_norm": "a@b.com",
+            "phone": "+34123456789",
+            "email": "a@b.com",
             "username": "Alice",
             "id_card": "ID1",
         }

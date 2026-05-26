@@ -45,8 +45,10 @@ def _tag_count_on_keys_only(leads_where: str) -> bool:
     if "lead_identities" in leads_where or "lead_tags" in leads_where:
         return False
     lead_columns = (
-        "email_",
-        "phone_",
+        "email =",
+        "email_local",
+        "email_domain",
+        "phone =",
         "full_name",
         "first_name",
         "last_name",

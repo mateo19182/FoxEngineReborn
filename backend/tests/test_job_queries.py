@@ -21,12 +21,12 @@ class TestLeadsCountSql(unittest.TestCase):
             tag_keys_select="SELECT batch_id, row_in_batch FROM lead_tags WHERE 1 = 0",
         )
         sql = leads_count_sql(compiled)
-        self.assertIn(") AS tagged\nWHERE 1 = 1", sql)
+        self.assertIn(") AS tagged\nWHERE (1 = 1)", sql)
         self.assertNotIn("INNER JOIN leads", sql)
 
     def test_tag_and_email_count_keeps_leads_join(self) -> None:
         compiled = CompiledLeadsQuery(
-            leads_where="(email_norm = {v_0:String})",
+            leads_where="(email = {v_0:String})",
             parameters={},
             tag_keys_select="SELECT batch_id, row_in_batch FROM lead_tags WHERE 1 = 0",
         )

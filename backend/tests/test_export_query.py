@@ -15,7 +15,7 @@ from foxengine.services.export_query import (
 class TestExportQuery(unittest.TestCase):
     def test_keyset_clause_omitted_without_cursor(self) -> None:
         compiled = CompiledLeadsQuery(
-            leads_where="email_norm = {v:String}",
+            leads_where="email = {v:String}",
             parameters={"v": "a@b.c"},
         )
         sql = leads_export_batch_sql(compiled, limit=100, cursor=None)
@@ -28,9 +28,9 @@ class TestExportQuery(unittest.TestCase):
         sql = leads_export_batch_sql(
             compiled,
             limit=100,
-            columns=["email_raw", "username"],
+            columns=["email", "username"],
         )
-        self.assertIn("SELECT l.email_raw, l.username", sql)
+        self.assertIn("SELECT l.email, l.username", sql)
         self.assertNotIn("l.password", sql)
 
     def test_keyset_clause_with_cursor(self) -> None:
@@ -69,14 +69,14 @@ class TestExportQuery(unittest.TestCase):
             secret_key="sk",
             ch_format="CSVWithNames",
             row_cap=1000,
-            columns=["email_raw", "username"],
+            columns=["email", "username"],
         )
-        self.assertIn("SELECT l.email_raw, l.username", sql)
+        self.assertIn("SELECT l.email, l.username", sql)
         self.assertNotIn("l.password", sql)
 
     def test_normalize_export_columns_rejects_unknown(self) -> None:
         with self.assertRaises(ValueError):
-            normalize_export_columns(["email_raw", "not_a_column"])
+            normalize_export_columns(["email", "not_a_column"])
 
     def test_export_s3_url(self) -> None:
         self.assertEqual(

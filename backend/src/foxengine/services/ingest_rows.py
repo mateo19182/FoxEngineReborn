@@ -19,10 +19,8 @@ CH_INSERT_COLUMNS = [
     "batch_id",
     "row_in_batch",
     "ingest_ts",
-    "phone_norm",
-    "phone_raw",
-    "email_norm",
-    "email_raw",
+    "phone",
+    "email",
     "username",
     "id_card",
     "full_name",
@@ -58,6 +56,13 @@ CH_TAG_INSERT_COLUMNS = [
     "row_in_batch",
     "assigned_at",
     "source",
+]
+
+CH_FINGERPRINT_INSERT_COLUMNS = [
+    "row_hash",
+    "batch_id",
+    "row_in_batch",
+    "ingest_ts",
 ]
 
 
@@ -121,8 +126,8 @@ def materialize_lead_row(
     ingest_ts: datetime,
     seen_hashes: set[str],
     default_phone_region: str | None = None,
-) -> tuple[RowOutcome, list[Any] | None, str | None, str | None]:
-    """Return (outcome, ch_row, rejection_reason, raw_line_snippet).
+) -> tuple[RowOutcome, list[Any] | None, str | None, str | None, str | None]:
+    """Return (outcome, ch_row, row_hash, rejection_reason, raw_line_snippet).
 
     On duplicate, ch_row is None and raw_line_snippet is None.
     On rejection, raw_line_snippet is a short diagnostic string.
@@ -131,19 +136,17 @@ def materialize_lead_row(
     if not isinstance(extras, dict):
         extras = {}
 
-    phone_norm, phone_raw = normalize_phone(raw.get("phone"), default_phone_region)
-    email_norm, email_raw = normalize_email(raw.get("email"))
+    phone = normalize_phone(raw.get("phone"), default_phone_region)
+    email = normalize_email(raw.get("email"))
     username = _as_str(raw.get("username"))
     id_card = _as_str(raw.get("id_card"))
 
-    if not has_any_identity(phone_norm, email_norm, username, id_card):
-        return RowOutcome.rejected, None, "missing identity", str(raw)[:8000]
+    if not has_any_identity(phone, email, username, id_card):
+        return RowOutcome.rejected, None, None, "missing identity", str(raw)[:8000]
 
     built: dict[str, Any] = {
-        "phone_norm": phone_norm,
-        "phone_raw": phone_raw or _as_str(raw.get("phone")),
-        "email_norm": email_norm,
-        "email_raw": email_raw or _as_str(raw.get("email")),
+        "phone": phone,
+        "email": email,
         "username": username,
         "id_card": id_card,
         "full_name": _as_str(raw.get("full_name")),
@@ -166,17 +169,15 @@ def materialize_lead_row(
     }
     dk = row_dedup_key(built)
     if dk in seen_hashes:
-        return RowOutcome.duplicate, None, None, None
+        return RowOutcome.duplicate, None, dk, None, None
     seen_hashes.add(dk)
 
     ch_row = [
         str(batch_id),
         row_in_batch,
         ingest_ts,
-        built["phone_norm"],
-        built["phone_raw"],
-        built["email_norm"],
-        built["email_raw"],
+        built["phone"],
+        built["email"],
         built["username"],
         built["id_card"],
         built["full_name"],
@@ -197,21 +198,21 @@ def materialize_lead_row(
         built["last_seen"] or None,
         built["extras"],
     ]
-    return RowOutcome.accepted, ch_row, None, None
+    return RowOutcome.accepted, ch_row, dk, None, None
 
 
 def materialize_identity_rows(lead_row: list[Any]) -> list[list[Any]]:
     batch_id = lead_row[0]
     row_in_batch = lead_row[1]
     ingest_ts = lead_row[2]
-    phone_norm = str(lead_row[3])
-    email_norm = str(lead_row[5])
-    username = str(lead_row[7])
-    id_card = str(lead_row[8])
+    phone = str(lead_row[3])
+    email = str(lead_row[4])
+    username = str(lead_row[5])
+    id_card = str(lead_row[6])
 
     return [
         [kind, value, batch_id, row_in_batch, ingest_ts]
-        for kind, value in identity_facet_tuples(phone_norm, email_norm, username, id_card)
+        for kind, value in identity_facet_tuples(phone, email, username, id_card)
     ]
 
 

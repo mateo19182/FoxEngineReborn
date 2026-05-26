@@ -74,8 +74,8 @@ Runtime ingest behavior:
 - source file streamed from object storage (no full local copy for line-oriented formats)
 - exact duplicate source files are detected by SHA-256 and rejected by default at queue time
 - parse + normalize into canonical lead fields
-- deduplicate within ingest run
-- write leads, identities, and tag links to ClickHouse in chunks (parallel inserts per flush)
+- deduplicate within ingest run and against the global exact-row fingerprint index
+- write leads, identities, tag links, and fingerprints to ClickHouse in chunks
 - persist rejected rows in Postgres for CSV download
 - update batch/job counters and completion state
 

@@ -49,7 +49,6 @@ from foxengine.services.column_map_llm import suggest_column_map_with_llm
 from foxengine.services.deleted_batches import (
     batch_clickhouse_counts,
     deleted_batch_sql_clause,
-    mark_batch_visibility,
 )
 from foxengine.services.file_hash import sha256_hex
 from foxengine.services.format_detect import (
@@ -779,8 +778,8 @@ async def run_query(
         related_params = dict(params)
         related_params.update(
             {
-                "rel_emails": identity_values["email_norm"],
-                "rel_phones": identity_values["phone_norm"],
+                "rel_emails": identity_values["email"],
+                "rel_phones": identity_values["phone"],
                 "rel_usernames": identity_values["username"],
                 "rel_id_cards": identity_values["id_card"],
             }
@@ -789,8 +788,8 @@ async def run_query(
         deleted_extra, deleted_params = await deleted_batch_sql_clause(session)
         related_where_sql = (
             "("
-            "has({rel_emails:Array(String)}, email_norm) "
-            "OR has({rel_phones:Array(String)}, phone_norm) "
+            "has({rel_emails:Array(String)}, email) "
+            "OR has({rel_phones:Array(String)}, phone) "
             "OR has({rel_usernames:Array(String)}, lower(username)) "
             "OR has({rel_id_cards:Array(String)}, id_card)"
             f"){deleted_extra}"
@@ -1688,7 +1687,6 @@ async def delete_batch(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
 
     ch = await get_ch_client()
-    await mark_batch_visibility(ch, batch_id, visible=False, reason="batch_delete")
     purge_job_id: str | None = None
 
     if b.deleted_at is None:
@@ -2123,7 +2121,9 @@ async def ingest_file_from_upload(
             if not inner_name or not staging_key:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid staged upload part")
             source_sha256 = str(part.get("source_sha256") or "").strip()
-            duplicate_match = duplicate_matches[part_idx] if part_idx < len(duplicate_matches) else None
+            duplicate_match = (
+                duplicate_matches[part_idx] if part_idx < len(duplicate_matches) else None
+            )
 
             raw_fmt = part.get("format")
             if not isinstance(raw_fmt, str):

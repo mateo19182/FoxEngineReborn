@@ -78,16 +78,14 @@ class TestDslTagFirst(unittest.TestCase):
         self.assertIsNotNone(cw.tag_keys_select)
         self.assertIn("NOT", cw.leads_where)
 
-    def test_tag_count_keeps_visibility_clause_parentheses_balanced(self):
+    def test_tag_count_keeps_deleted_batch_clause_parentheses_balanced(self):
         compiled = CompiledLeadsQuery(
-            leads_where="""(1 = 1) AND batch_id NOT IN (
-    SELECT batch_id
-    FROM batch_visibility
-    GROUP BY batch_id
-    HAVING argMax(visible, version) = 0
-)""",
-            parameters={},
-            tag_keys_select="SELECT DISTINCT batch_id, row_in_batch FROM lead_tags WHERE tag_id = toUUID({tu_0:String})",
+            leads_where="(1 = 1) AND batch_id NOT IN (toUUID({bd_0:String}))",
+            parameters={"bd_0": str(U1)},
+            tag_keys_select=(
+                "SELECT DISTINCT batch_id, row_in_batch FROM lead_tags "
+                "WHERE tag_id = toUUID({tu_0:String})"
+            ),
         )
         sql = leads_count_sql(compiled)
         self.assertIn("WHERE (1 = 1) AND batch_id NOT IN", sql)

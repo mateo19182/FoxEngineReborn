@@ -12,15 +12,8 @@ export type DisplayColumn = {
   getValue: (row: Record<string, unknown>) => unknown;
 };
 
-/** Raw row keys folded into a single display column (hidden when merged value is shown). */
-export const ABSORBED_ROW_KEYS = new Set([
-  "phone_norm",
-  "phone_raw",
-  "email_norm",
-  "email_raw",
-  "email_local",
-  "email_domain",
-]);
+/** Materialized email parts hidden when the main email column is shown. */
+export const ABSORBED_ROW_KEYS = new Set(["email_local", "email_domain"]);
 
 const DISPLAY_COLUMNS: DisplayColumn[] = [
   {
@@ -37,8 +30,8 @@ const DISPLAY_COLUMNS: DisplayColumn[] = [
     relatedOnly: true,
     getValue: (row) => row._related_is_match,
   },
-  { id: "email", label: "Email", kind: "text", getValue: mergedEmail },
-  { id: "phone", label: "Phone", kind: "text", getValue: mergedPhone },
+  { id: "email", label: "Email", kind: "text", getValue: (row) => row.email },
+  { id: "phone", label: "Phone", kind: "text", getValue: (row) => row.phone },
   { id: "username", label: "Username", kind: "text", getValue: (row) => row.username },
   { id: "id_card", label: "ID card", kind: "text", getValue: (row) => row.id_card },
   { id: "full_name", label: "Full name", kind: "text", getValue: (row) => row.full_name },
@@ -69,12 +62,10 @@ const DETAIL_KEY_ORDER = [
   "_related_group",
   "_related_is_match",
   "_related_identities",
-  "email_raw",
-  "email_norm",
+  "email",
   "email_local",
   "email_domain",
-  "phone_raw",
-  "phone_norm",
+  "phone",
   "username",
   "id_card",
   "full_name",
@@ -115,18 +106,6 @@ export function formatDisplayValue(value: unknown): string {
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
-}
-
-export function mergedPhone(row: Record<string, unknown>): string {
-  const raw = String(row.phone_raw ?? "").trim();
-  if (raw) return raw;
-  return String(row.phone_norm ?? "").trim();
-}
-
-export function mergedEmail(row: Record<string, unknown>): string {
-  const raw = String(row.email_raw ?? "").trim();
-  if (raw) return raw;
-  return String(row.email_norm ?? "").trim();
 }
 
 function batchRef(row: Record<string, unknown>): string {
@@ -237,9 +216,8 @@ export function populatedDetailKeys(row: Record<string, unknown>): string[] {
 }
 
 function absorbedKeyRedundant(row: Record<string, unknown>, key: string): boolean {
-  if (key === "phone_norm") return isPopulated(String(row.phone_raw ?? "").trim());
-  if (key === "email_norm" || key === "email_local" || key === "email_domain") {
-    return isPopulated(mergedEmail(row));
+  if (key === "email_local" || key === "email_domain") {
+    return isPopulated(row.email);
   }
   return false;
 }

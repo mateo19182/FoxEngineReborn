@@ -34,6 +34,7 @@ async def get_ch_client() -> Any:
 async def ensure_clickhouse_schema() -> None:
     client = await get_ch_client()
     await _drop_legacy_schema_if_needed(client)
+    await client.command("DROP TABLE IF EXISTS batch_visibility")
     for ddl in CLICKHOUSE_SCHEMA_DDL:
         await client.command(ddl)
 

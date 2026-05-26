@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select, update
@@ -16,7 +17,6 @@ from foxengine.db.session import get_session_factory
 from foxengine.services.deleted_batches import (
     batch_clickhouse_counts,
     lightweight_delete_batch_rows,
-    mark_batch_visibility,
 )
 
 log = logging.getLogger(__name__)
@@ -97,7 +97,6 @@ async def run_batch_purge_job(job_id: UUID) -> None:
 
     ch = await get_ch_client()
     try:
-        await mark_batch_visibility(ch, batch_id, visible=False, reason="batch_purge")
         if not already_purged:
             await lightweight_delete_batch_rows(ch, batch_id)
             counts = await _wait_for_zero_rows(ch, batch_id)

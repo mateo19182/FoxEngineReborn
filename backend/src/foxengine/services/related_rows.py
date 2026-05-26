@@ -6,16 +6,16 @@ from typing import Any
 from foxengine.services.identity import identity_facet_tuples
 
 _KIND_TO_ROW_FIELD = {
-    "email": "email_norm",
-    "phone": "phone_norm",
+    "email": "email",
+    "phone": "phone",
     "username": "username",
     "id_card": "id_card",
 }
 
 
 def _row_identity_inputs(row: dict[str, Any]) -> tuple[str, str, str, str]:
-    phone = str(row.get("phone_norm") or "").strip()
-    email = str(row.get("email_norm") or "").strip()
+    phone = str(row.get("phone") or "").strip()
+    email = str(row.get("email") or "").strip()
     username = str(row.get("username") or "").strip()
     id_card = str(row.get("id_card") or "").strip()
     return phone, email, username, id_card

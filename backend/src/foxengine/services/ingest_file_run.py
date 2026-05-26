@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import json
 import logging
@@ -17,25 +16,21 @@ from foxengine.clickhouse import get_ch_client
 from foxengine.config import get_settings
 from foxengine.db.models import Batch, IngestRejection, Job
 from foxengine.db.session import get_session_factory
-from foxengine.services.deleted_batches import (
-    lightweight_delete_batch_rows,
-    mark_batch_visibility,
-)
+from foxengine.services.deleted_batches import lightweight_delete_batch_rows
 from foxengine.services.format_detect import LINE_VALUE_HEADER
 from foxengine.services.ingest import resolve_tag_ids
 from foxengine.services.ingest_rows import (
-    CH_IDENTITY_INSERT_COLUMNS,
-    CH_INSERT_COLUMNS,
-    CH_TAG_INSERT_COLUMNS,
     RowOutcome,
     csv_row_to_raw,
     ingest_timestamp,
     json_object_to_raw,
-    materialize_identity_rows,
     materialize_lead_row,
-    materialize_tag_rows,
 )
 from foxengine.services.ingest_s3_stream import iter_utf8_lines, read_body_bytes
+from foxengine.services.lead_fingerprints import (
+    insert_prepared_leads,
+    prepare_new_lead_inserts,
+)
 
 log = logging.getLogger(__name__)
 
@@ -100,7 +95,6 @@ async def run_ingest_file_job(job_id: UUID) -> None:
         s3_chunk_bytes=s.ingest_s3_read_chunk_bytes,
     )
     ch = await get_ch_client()
-    await mark_batch_visibility(ch, batch.id, visible=False, reason="ingest_file_start")
     await lightweight_delete_batch_rows(ch, batch.id)
 
     session_boto = aioboto3.Session()
@@ -128,7 +122,7 @@ async def run_ingest_file_job(job_id: UUID) -> None:
         if not ok:
             return
 
-        if pipeline.ch_rows:
+        if pipeline.pending_rows:
             await pipeline.flush(ch)
         if pipeline.rejections:
             await pipeline.flush_rejections()
@@ -144,9 +138,6 @@ async def run_ingest_file_job(job_id: UUID) -> None:
             )
         )
         await session.commit()
-
-    await mark_batch_visibility(ch, batch.id, visible=True, reason="ingest_file_done")
-
     async with factory() as session:
         await session.execute(
             update(Job)
@@ -190,9 +181,7 @@ class _IngestPipeline:
         self.progress_every = progress_every
         self.s3_chunk_bytes = s3_chunk_bytes
 
-        self.ch_rows: list[list[Any]] = []
-        self.identity_rows: list[list[Any]] = []
-        self.tag_rows: list[list[Any]] = []
+        self.pending_rows: list[tuple[list[Any], str]] = []
         self.rejections: list[tuple[int, str, str]] = []
         self.seen_hashes: set[str] = set()
         self.accepted = 0
@@ -204,24 +193,19 @@ class _IngestPipeline:
         self._rejection_flush_rows = min(max(flush_rows, 1), 10_000)
 
     def processed_total(self) -> int:
-        return self.accepted + self.rejected + self.dup
+        return self.accepted + len(self.pending_rows) + self.rejected + self.dup
 
     def append_raw(self, raw: dict[str, Any], line_no: int) -> None:
-        self.rib, self.accepted, self.dup, self.rejected = _append_row(
+        self.dup, self.rejected = _append_row(
             raw,
             self.batch_id,
-            self.rib,
-            self.accepted,
             self.dup,
             self.rejected,
             line_no,
-            self.tag_id_strs,
             self.seen_hashes,
             self.ts,
             self.default_region_s,
-            self.ch_rows,
-            self.identity_rows,
-            self.tag_rows,
+            self.pending_rows,
             self.rejections,
         )
 
@@ -237,7 +221,7 @@ class _IngestPipeline:
         self.append_raw(mapped, line_no)
 
     async def tick(self, ch: Any) -> None:
-        needs_flush = len(self.ch_rows) >= self.flush_rows
+        needs_flush = len(self.pending_rows) >= self.flush_rows
         needs_rejection_flush = len(self.rejections) >= self._rejection_flush_rows
         total = self.processed_total()
         needs_progress = total >= self._next_progress_at
@@ -252,7 +236,21 @@ class _IngestPipeline:
             await self.report_progress(total)
 
     async def flush(self, ch: Any) -> None:
-        await _flush_clickhouse_rows(ch, self.ch_rows, self.identity_rows, self.tag_rows)
+        pending = self.pending_rows
+        self.pending_rows = []
+        prepared = await prepare_new_lead_inserts(
+            ch,
+            pending,
+            batch_id=self.batch_id,
+            next_row_in_batch=self.rib,
+            tag_id_strs=self.tag_id_strs,
+            assigned_at=self.ts,
+            tag_source="ingest_file",
+        )
+        await insert_prepared_leads(ch, prepared)
+        self.accepted += len(prepared.ch_rows)
+        self.dup += prepared.duplicate_rows
+        self.rib = prepared.next_row_in_batch
 
     async def flush_rejections(self) -> None:
         if not self.rejections:
@@ -435,69 +433,32 @@ async def _ingest_combo(
 def _append_row(
     raw: dict[str, Any],
     batch_id: UUID,
-    rib: int,
-    accepted: int,
     dup: int,
     rejected: int,
     line_no: int,
-    tag_id_strs: list[str],
     seen_hashes: set[str],
     ts: datetime,
     default_region: str | None,
-    ch_rows: list[list[Any]],
-    identity_rows: list[list[Any]],
-    tag_rows: list[list[Any]],
+    pending_rows: list[tuple[list[Any], str]],
     rejections: list[tuple[int, str, str]],
-) -> tuple[int, int, int, int]:
-    outcome, ch_row, reason, raw_line = materialize_lead_row(
+) -> tuple[int, int]:
+    outcome, ch_row, row_hash, reason, raw_line = materialize_lead_row(
         raw,
         batch_id=batch_id,
-        row_in_batch=rib + 1,
+        row_in_batch=0,
         ingest_ts=ts,
         seen_hashes=seen_hashes,
         default_phone_region=default_region,
     )
     if outcome is RowOutcome.rejected:
         rejections.append((line_no, reason or "rejected", (raw_line or str(raw))[:8000]))
-        return rib, accepted, dup, rejected + 1
+        return dup, rejected + 1
     if outcome is RowOutcome.duplicate:
-        return rib, accepted, dup + 1, rejected
+        return dup + 1, rejected
     assert ch_row is not None
-    new_rib = rib + 1
-    ch_row[1] = new_rib
-    ch_rows.append(ch_row)
-    identity_rows.extend(materialize_identity_rows(ch_row))
-    tag_rows.extend(
-        materialize_tag_rows(
-            tag_id_strs,
-            ch_row,
-            assigned_at=ts,
-            source="ingest_file",
-        )
-    )
-    return new_rib, accepted + 1, dup, rejected
-
-
-async def _flush_clickhouse_rows(
-    ch: Any,
-    ch_rows: list[list[Any]],
-    identity_rows: list[list[Any]],
-    tag_rows: list[list[Any]],
-) -> None:
-    leads = ch.insert("leads", ch_rows, column_names=CH_INSERT_COLUMNS)
-    identities = ch.insert(
-        "lead_identities",
-        identity_rows,
-        column_names=CH_IDENTITY_INSERT_COLUMNS,
-    )
-    if tag_rows:
-        tags = ch.insert("lead_tags", tag_rows, column_names=CH_TAG_INSERT_COLUMNS)
-        await asyncio.gather(leads, identities, tags)
-    else:
-        await asyncio.gather(leads, identities)
-    ch_rows.clear()
-    identity_rows.clear()
-    tag_rows.clear()
+    assert row_hash is not None
+    pending_rows.append((ch_row, row_hash))
+    return dup, rejected
 
 
 async def _fail_job(session: Any, job_id: UUID, msg: str) -> None:

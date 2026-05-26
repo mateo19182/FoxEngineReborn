@@ -6,38 +6,34 @@ import phonenumbers
 from phonenumbers import NumberParseException, PhoneNumberFormat
 
 
-def normalize_email(raw: str | None) -> tuple[str, str]:
+def normalize_email(raw: str | None) -> str:
     if not raw or not str(raw).strip():
-        return "", ""
-    s = str(raw).strip().lower()
-    return s, raw.strip()
+        return ""
+    return str(raw).strip().lower()
 
 
-def normalize_phone(
-    raw: str | None, default_region: str | None = None
-) -> tuple[str, str]:
+def normalize_phone(raw: str | None, default_region: str | None = None) -> str:
     if not raw or not str(raw).strip():
-        return "", ""
+        return ""
     raw_s = str(raw).strip()
     try:
         parsed = phonenumbers.parse(raw_s, default_region)
         if not phonenumbers.is_valid_number(parsed):
-            return "", raw_s
-        e164 = phonenumbers.format_number(parsed, PhoneNumberFormat.E164)
-        return e164, raw_s
+            return raw_s
+        return phonenumbers.format_number(parsed, PhoneNumberFormat.E164)
     except NumberParseException:
-        return "", raw_s
+        return raw_s
 
 
 def identity_facet_tuples(
-    phone_norm: str, email_norm: str, username: str, id_card: str
+    phone: str, email: str, username: str, id_card: str
 ) -> list[tuple[str, str]]:
     """Return (identity_kind, identity_value) pairs for lead_identities indexing."""
     facets: list[tuple[str, str]] = []
-    if email_norm:
-        facets.append(("email", email_norm))
-    if phone_norm:
-        facets.append(("phone", phone_norm))
+    if email:
+        facets.append(("email", email))
+    if phone:
+        facets.append(("phone", phone))
     u = (username or "").strip()
     if u:
         facets.append(("username", u.lower()))
@@ -49,8 +45,8 @@ def identity_facet_tuples(
 
 def row_dedup_key(row: dict[str, Any]) -> str:
     keys = (
-        "phone_norm",
-        "email_norm",
+        "phone",
+        "email",
         "username",
         "id_card",
         "full_name",
@@ -77,7 +73,5 @@ def row_dedup_key(row: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-def has_any_identity(
-    phone_norm: str, email_norm: str, username: str, id_card: str
-) -> bool:
-    return bool(phone_norm or email_norm or (username or "").strip() or (id_card or "").strip())
+def has_any_identity(phone: str, email: str, username: str, id_card: str) -> bool:
+    return bool(phone or email or (username or "").strip() or (id_card or "").strip())
